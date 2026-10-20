@@ -234,6 +234,15 @@ class DistillTest(unittest.TestCase):
         self.assertEqual("quality_report.flowcharts[0]", protected["payload_ref"])
         self.assertEqual(self.file_id, protected["source"]["source_file_id"])
         self.assertEqual(self.version_id, protected["source"]["source_version_id"])
+        rag_section = next(section for section in sidecar["rag_selection"]["sections"]
+                           if section["id"] == "visual_assets")
+        document_ref = {"knowledge_id": draft["knowledge_id"], "revision": "1",
+                        "content_hash": draft["content_hash"]}
+        self.assertEqual(document_ref, sidecar["rag_selection"]["document_ref"])
+        self.assertEqual(document_ref, rag_section["document_ref"])
+        self.assertEqual([f"{self.file_id}@{self.version_id}"],
+                         [source["source_ref_id"] for source in rag_section["source_refs"]])
+        self.assertEqual([flowchart["asset_id"]], rag_section["protected_asset_refs"])
         canonical = json.dumps(flowchart, ensure_ascii=False, sort_keys=True,
                                separators=(",", ":")).encode("utf-8")
         self.assertEqual(hashlib.sha256(canonical).hexdigest(), protected["payload_sha256"])

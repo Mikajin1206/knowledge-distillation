@@ -60,7 +60,8 @@ _RAG_MARKER_RE = re.compile(
 _SECTION_HEADING_RE = re.compile(r"^(#{2,6})\s+(.+?)\s*$", re.M)
 
 
-def extract_rag_payload(md_text: str) -> dict:
+def extract_rag_payload(md_text: str, protected_assets: list[dict] | None = None,
+                        source_refs: list[dict] | None = None) -> dict:
     """Split marked H2-H6 sections into retrieval and excluded routes.
 
     Missing, malformed, or duplicate markers fail closed: no body text is
@@ -68,6 +69,10 @@ def extract_rag_payload(md_text: str) -> dict:
     never determines the route.
     """
     frontmatter, body = split_frontmatter(md_text)
+    document_ref = {key: frontmatter.get(key)
+                    for key in ("knowledge_id", "revision", "content_hash")}
+    protected_assets = protected_assets if isinstance(protected_assets, list) else []
+    source_refs = source_refs if isinstance(source_refs, list) else []
     matches = list(_SECTION_HEADING_RE.finditer(body))
     errors: list[str] = []
     sections: list[dict] = []
@@ -107,11 +112,25 @@ def extract_rag_payload(md_text: str) -> dict:
         f"## {' / '.join(item['heading_path'])}\n\n{item['content']}"
         for item in body_sections
     )
-    manifest = [{key: item[key] for key in
-                 ("id", "title", "level", "heading_path", "route", "content_sha256")}
-                for item in sections]
+    manifest = []
+    for item in sections:
+        asset_refs = []
+        if item["route"] == "body":
+            for asset in protected_assets:
+                asset_id = str(asset.get("asset_id") or "")
+                body_ref = str(asset.get("body_ref") or "")
+                if asset_id and (asset_id in item["content"]
+                                 or (body_ref and body_ref in item["content"])):
+                    asset_refs.append(asset_id)
+        manifest.append({
+            **{key: item[key] for key in
+               ("id", "title", "level", "heading_path", "route", "content_sha256")},
+            "document_ref": document_ref,
+            "source_refs": source_refs,
+            "protected_asset_refs": asset_refs,
+        })
     return {
-        "schema": "kd-rag-selection/v2",
+        "schema": "kd-rag-selection/v3",
         "routing_valid": routing_valid,
         "errors": errors,
         "metadata": {"knowledge_id": frontmatter.get("knowledge_id"),
@@ -125,6 +144,7 @@ def extract_rag_payload(md_text: str) -> dict:
                      "quality_score": frontmatter.get("quality_score"),
                      "content_hash": frontmatter.get("content_hash")},
         "sections": manifest,
+        "document_ref": document_ref,
         "retrieval_md": retrieval_md if routing_valid else "",
     }
 
@@ -158,6 +178,7 @@ def _protected_assets_manifest(quality_report: dict) -> dict:
             "asset_id": payload.get("asset_id") if isinstance(payload, dict) else None,
             "asset_type": payload.get("asset_type", "diagram") if isinstance(payload, dict) else "diagram",
             "source": source,
+            "body_ref": payload.get("body_ref") if isinstance(payload, dict) else None,
             "payload_ref": f"quality_report.flowcharts[{index}]",
             "payload_sha256": hashlib.sha256(canonical).hexdigest(),
         })
@@ -184,7 +205,13 @@ def build_sidecar(draft: dict, project: dict) -> dict:
         "content_hash": draft["content_hash"],
         "products": extract_products(draft["body_md"]),
     }) + draft["body_md"]
-    rag_payload = extract_rag_payload(rendered_md)
+    quality_report = draft.get("quality_report") or {}
+    protected_assets = _protected_assets_manifest(quality_report)
+    source_refs = [{"source_ref_id": f"{item['file_id']}@{item['version_id']}",
+                    "file_id": item["file_id"], "version_id": item["version_id"],
+                    "sha256": item["sha256"]}
+                   for item in draft.get("sources", [])]
+    rag_payload = extract_rag_payload(rendered_md, protected_assets["items"], source_refs)
     return {
         "schema": "ckp-distilled-knowledge/v0.4",
         "knowledge_id": draft["knowledge_id"],
@@ -210,11 +237,13 @@ def build_sidecar(draft: dict, project: dict) -> dict:
         "gaps": draft.get("task_gaps", []),
         "section_check": section_check,
         "quality_check": draft.get("quality_check") or {"status": "not_recorded"},
-        "quality_report": draft.get("quality_report") or {},
-        "protected_assets": _protected_assets_manifest(draft.get("quality_report") or {}),
+        "quality_report": quality_report,
+        "protected_assets": protected_assets,
         "rag_selection": {"schema": rag_payload["schema"],
                           "routing_valid": rag_payload["routing_valid"],
                           "errors": rag_payload["errors"],
+                          "document_ref": rag_payload["document_ref"],
+                          "source_refs": source_refs,
                           "sections": rag_payload["sections"]},
         "note": ("草稿状态：未经项目经理审核，不代表已入库；content_hash 一致不证明内容事实正确。"
                  "审核与发布由后续服务管理。RAG 切片只读取显式 kd-section 标识；"

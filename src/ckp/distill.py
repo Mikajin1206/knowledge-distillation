@@ -533,7 +533,7 @@ class Distill:
             knowledge_id, revision = db.new_id("k"), 1
         now = now_iso()
         # 快照提交时刻的人工补充与缺口：同一修订的导出字节此后不变，
-        # 新补充只进入后续修订。
+        # 新补充只进入后续修订（docs/05 §4）。
         gaps_snapshot = [{"gap_id": g["gap_id"], "description": g["description"],
                           "declared_at": g["declared_at"], "resolved": g["resolved"]}
                          for g in task["gaps"]]
@@ -620,7 +620,10 @@ def _sections(body_md: str) -> dict[str, str]:
     matches = list(re.finditer(r"^##\s+(.+?)\s*$", text, re.M))
     out: dict[str, str] = {}
     for index, match in enumerate(matches):
-        title = match.group(1).strip()
+        title = re.sub(
+            r"\s*<!--\s*kd-section\s+id=[a-z][a-z0-9_-]*\s+"
+            r"rag=(?:body|metadata|audit|exclude)\s*-->\s*$", "",
+            match.group(1).strip())
         end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
         out.setdefault(title, "")
         out[title] += text[match.end():end]

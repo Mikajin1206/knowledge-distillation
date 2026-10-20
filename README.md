@@ -24,6 +24,17 @@ Historical test reports, process logs, customer files, and local configuration a
 - Excludes covers, tables of contents, audience notes, revision history, legends, headers, footers, and unrelated decorative images from the knowledge draft.
 - Records source versions, missing evidence, human-provided context, and a configurable quality score. A low score is disclosed and does not prevent draft export.
 - Exports a Markdown draft and JSON sidecar. The draft carries a SHA-256 hash that can be checked independently.
+- Marks every Markdown section with an explicit routing ID: `body`, `metadata`, `audit`, or `exclude`. The routing parser uses those markers instead of guessing from heading text and fails closed when a marker is missing or invalid. This prepares a clean RAG handoff; approval and publishing are not implemented.
+
+## Section routing for future RAG
+
+Every `##` through `######` heading carries a stable section ID and route, for example:
+
+```md
+## Procurement workflow <!-- kd-section id=procurement_workflow rag=body -->
+```
+
+`body` becomes retrieval text, `metadata` becomes structured metadata, `audit` is retained for audit only, and `exclude` is omitted from retrieval output. The parser does not infer a route from heading wording. Missing, malformed, or duplicate markers make the routing manifest invalid and return no retrieval text. The HTML comments are routing metadata and are removed from the extracted retrieval text. This is a preparation contract; formal RAG publishing is not implemented.
 
 ## Scope and data boundary
 

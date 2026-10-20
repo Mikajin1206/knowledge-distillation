@@ -1,6 +1,6 @@
 """蒸馏知识 md 产出：frontmatter + 正文导出，及 content_hash 独立校验。
 
-Markdown 草稿与来源 sidecar 的产出契约：
+产出契约（详见 docs/05 接续文档）：
 - 导出文件为 UTF-8 Markdown：YAML frontmatter + 正文；正文与草稿存档逐字节一致。
 - content_hash = SHA-256(正文原字节)；正文指 frontmatter 结束行 `---` 之后的
   全部字节。校验按字节进行：换行被改为 CRLF 等任何字节变化都会判不匹配。
@@ -14,6 +14,7 @@ import hashlib
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 from ckp import db
 
@@ -51,6 +52,99 @@ def _yq(value) -> str:
 
 _UNESCAPE = {'"': '"', "\\": "\\", "n": "\n", "r": "\r", "t": "\t"}
 
+# Routing is explicit and deliberately independent from human heading text.
+# Every H2-H6 section must end with e.g.:
+#   <!-- kd-section id=procurement rag=body -->
+_RAG_MARKER_RE = re.compile(
+    r"\s*<!--\s*kd-section\s+id=([a-z][a-z0-9_-]*)\s+"
+    r"rag=(body|metadata|audit|exclude)\s*-->\s*$"
+)
+_SECTION_HEADING_RE = re.compile(r"^(#{2,6})\s+(.+?)\s*$", re.M)
+
+
+def extract_rag_payload(md_text: str) -> dict:
+    """Split marked H2-H6 sections into retrieval text, metadata, and audit routes.
+
+    Missing, malformed, or duplicate markers fail closed: no body text is
+    returned for indexing. Heading wording is preserved for display only and
+    never determines the route.
+    """
+    frontmatter, body = split_frontmatter(md_text)
+    matches = list(_SECTION_HEADING_RE.finditer(body))
+    errors: list[str] = []
+    sections: list[dict] = []
+    seen_ids: set[str] = set()
+    heading_stack: list[tuple[int, str]] = []
+    for index, match in enumerate(matches):
+        level = len(match.group(1))
+        raw_heading = match.group(2).strip()
+        marker = _RAG_MARKER_RE.search(raw_heading)
+        if marker is None:
+            errors.append(f"第 {index + 1} 个章节标题缺少有效 kd-section 标识")
+            title = raw_heading
+            section_id = ""
+            route = ""
+        else:
+            section_id, route = marker.group(1), marker.group(2)
+            title = raw_heading[:marker.start()].strip()
+            if section_id in seen_ids:
+                errors.append(f"章节标识重复: {section_id}")
+            seen_ids.add(section_id)
+        while heading_stack and heading_stack[-1][0] >= level:
+            heading_stack.pop()
+        heading_path = [item[1] for item in heading_stack] + [title]
+        heading_stack.append((level, title))
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(body)
+        content = body[match.end():end].strip()
+        sections.append({"id": section_id, "title": title, "level": level,
+                         "heading_path": heading_path, "route": route,
+                         "content": content,
+                         "content_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest()})
+    if not matches:
+        errors.append("正文没有可路由的二级及以下章节")
+
+    routing_valid = not errors
+    body_sections = [item for item in sections if item["route"] == "body"] if routing_valid else []
+    metadata_sections = {
+        item["id"]: {"title": item["title"], "content": item["content"]}
+        for item in sections if routing_valid and item["route"] == "metadata"
+    }
+    audit_sections = {
+        item["id"]: {"title": item["title"], "content": item["content"]}
+        for item in sections if routing_valid and item["route"] == "audit"
+    }
+    retrieval_md = "\n\n".join(
+        f"## {' / '.join(item['heading_path'])}\n\n{item['content']}"
+        for item in body_sections
+    )
+    manifest = [{key: item[key] for key in
+                 ("id", "title", "level", "heading_path", "route", "content_sha256")}
+                for item in sections]
+    return {
+        "schema": "kd-rag-selection/v1",
+        "routing_valid": routing_valid,
+        "errors": errors,
+        "metadata": {"knowledge_id": frontmatter.get("knowledge_id"),
+                     "revision": frontmatter.get("revision"),
+                     "title": frontmatter.get("title"),
+                     "knowledge_type": frontmatter.get("knowledge_type"),
+                     "status": frontmatter.get("status"),
+                     "project_id": frontmatter.get("project_id"),
+                     "project_name": frontmatter.get("project_name"),
+                     "owner": frontmatter.get("owner"),
+                     "stage": frontmatter.get("stage"),
+                     "industry": frontmatter.get("industry", []),
+                     "products": frontmatter.get("products", []),
+                     "topics": frontmatter.get("topics", []),
+                     "quality_score": frontmatter.get("quality_score"),
+                     "quality_score_version": frontmatter.get("quality_score_version"),
+                     "content_hash": frontmatter.get("content_hash")},
+        "sections": manifest,
+        "retrieval_md": retrieval_md if routing_valid else "",
+        "metadata_sections": metadata_sections if routing_valid else {},
+        "audit_sections": audit_sections if routing_valid else {},
+    }
+
 
 def _unyq(raw: str) -> str:
     if len(raw) >= 2 and raw.startswith('"') and raw.endswith('"'):
@@ -61,6 +155,15 @@ def _unyq(raw: str) -> str:
 
 def build_sidecar(draft: dict, project: dict) -> dict:
     section_check = draft.get("section_check") or {}
+    rendered_md = render_frontmatter({
+        "knowledge_id": draft["knowledge_id"], "revision": draft["revision"],
+        "title": draft["title"], "knowledge_type": draft["knowledge_type"],
+        "status": draft["status"], "project_id": project["project_id"],
+        "project_name": project["name"], "stage": draft["stage"],
+        "topics": draft["topics"], "industry": project["industry"],
+        "products": project["products"],
+    }) + draft["body_md"]
+    rag_payload = extract_rag_payload(rendered_md)
     return {
         "schema": "ckp-distilled-knowledge/v0.2",
         "knowledge_id": draft["knowledge_id"],
@@ -86,8 +189,13 @@ def build_sidecar(draft: dict, project: dict) -> dict:
         "gaps": draft.get("task_gaps", []),
         "section_check": section_check,
         "quality_check": draft.get("quality_check") or {"status": "not_recorded"},
+        "rag_selection": {"schema": rag_payload["schema"],
+                          "routing_valid": rag_payload["routing_valid"],
+                          "errors": rag_payload["errors"],
+                          "sections": rag_payload["sections"]},
         "note": ("草稿状态：未经项目经理审核，不代表已入库；content_hash 一致不证明内容事实正确。"
-                 "审核与发布由后续服务管理"),
+                 "审核与发布由后续服务管理。RAG 切片只读取显式 kd-section 标识；"
+                 "缺失或无效标识时必须停止入库。"),
     }
 
 

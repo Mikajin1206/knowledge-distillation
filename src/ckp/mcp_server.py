@@ -66,7 +66,7 @@ server = MCPServer(
     "Knowledge Distillation",
     version="1.1.0",
     instructions=(
-        "Knowledge Distillation:原件上传只保存，不解析、不蒸馏、不索引；只有 .doc/.docx 可蒸馏。"
+        "Knowledge Distillation:项目名称必须由项目经理提供。上传前先调用现有 project_list 检查相同/相近名称；由项目经理判断是否同一项目，同一项目沿用清单规范名称并二次确认；不能从材料推断或自动合并。原件上传只保存，不解析、不蒸馏、不索引；只有 .doc/.docx 可蒸馏。"
         "按 project → upload（只处理用户给定的完整路径，不枚举目录）→ distill_start/attach → distill_guidance（每任务一次）→ distill_word_content（分页读完）→ 核心图片识别 → distill_quality_report_template（排除无关图后调用一次）→ draft_submit（一次提交来源和完整 quality_report）→ draft_export → distill_close 执行。"
         "质量分低、图片不确定、章节或来源定位不完整均记录为评分/待确认项，不阻止草稿提交；只有文件完整性、错误版本、无可用正文和非 Word 范围错误可阻断。"
         "draft_submit 前逐项填写 distill_guidance 快照中的所有 owner=client 评分维度，并补全模板中的图片与表格检查；不要先提交默认分再重复提交同一内容。若遗漏评分，保留当前草稿并披露评估覆盖，不为补分创建重复修订。"
@@ -112,7 +112,7 @@ def project_create(name: str, industry: str = "", products: str = "",
 @server.tool()
 @_tool_errors
 def project_list() -> list[dict]:
-    """列出全部项目。"""
+    """列出全部项目，供上传前人工核对项目名称及相近候选；不判断或合并项目。"""
     return Store(_data_dir(), readonly=True).list_projects()
 
 

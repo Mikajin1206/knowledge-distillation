@@ -142,6 +142,30 @@ def extract_products(body_md: str) -> list[str]:
                               if value.strip(" \t，,。；;")))
 
 
+def _protected_assets_manifest(quality_report: dict) -> dict:
+    flowcharts = quality_report.get("flowcharts", [])
+    flowcharts = flowcharts if isinstance(flowcharts, list) else []
+    items = []
+    for index, payload in enumerate(flowcharts):
+        canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                               separators=(",", ":")).encode("utf-8")
+        source = {}
+        if isinstance(payload, dict):
+            source = {key: payload.get(key) for key in
+                      ("source_file_id", "source_version_id", "source_sha256", "source_location")
+                      if payload.get(key)}
+        items.append({
+            "asset_id": payload.get("asset_id") if isinstance(payload, dict) else None,
+            "asset_type": payload.get("asset_type", "diagram") if isinstance(payload, dict) else "diagram",
+            "source": source,
+            "payload_ref": f"quality_report.flowcharts[{index}]",
+            "payload_sha256": hashlib.sha256(canonical).hexdigest(),
+        })
+    return {"schema": "kd-protected-assets/v1",
+            "preservation_policy": "lossless-structured-payload",
+            "items": items}
+
+
 def _unyq(raw: str) -> str:
     if len(raw) >= 2 and raw.startswith('"') and raw.endswith('"'):
         body = raw[1:-1]
@@ -162,7 +186,7 @@ def build_sidecar(draft: dict, project: dict) -> dict:
     }) + draft["body_md"]
     rag_payload = extract_rag_payload(rendered_md)
     return {
-        "schema": "ckp-distilled-knowledge/v0.3",
+        "schema": "ckp-distilled-knowledge/v0.4",
         "knowledge_id": draft["knowledge_id"],
         "revision": draft["revision"],
         "title": draft["title"],
@@ -186,6 +210,8 @@ def build_sidecar(draft: dict, project: dict) -> dict:
         "gaps": draft.get("task_gaps", []),
         "section_check": section_check,
         "quality_check": draft.get("quality_check") or {"status": "not_recorded"},
+        "quality_report": draft.get("quality_report") or {},
+        "protected_assets": _protected_assets_manifest(draft.get("quality_report") or {}),
         "rag_selection": {"schema": rag_payload["schema"],
                           "routing_valid": rag_payload["routing_valid"],
                           "errors": rag_payload["errors"],

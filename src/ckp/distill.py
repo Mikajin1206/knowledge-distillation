@@ -427,6 +427,7 @@ class Distill:
         body_md = str(body_md or "").replace("\r\n", "\n")
         if not body_md.strip():
             raise ValueError("草稿正文不能为空")
+        quality_report_snapshot = quality_report if isinstance(quality_report, dict) else {}
         materials = {m["version_id"]: m for m in task["materials"]}
         supplied_sources = isinstance(sources, list) and bool(sources)
         if not supplied_sources:
@@ -504,7 +505,7 @@ class Distill:
         table_count = sum(len(item.get("tables", [])) for item in manifests
                           if item.get("format") == "docx")
         quality_check = score_quality(
-            score_policy, quality_report, source_score=source_score,
+            score_policy, quality_report_snapshot, source_score=source_score,
             source_note=source_note, section_score=section_score,
             section_note=section_note, asset_count=asset_count,
             table_count=table_count)
@@ -549,16 +550,17 @@ class Distill:
             "human_inputs_json": db.dumps(inputs_snapshot),
             "section_check_json": db.dumps(section_check),
             "quality_json": db.dumps(quality_check),
+            "quality_report_json": db.dumps(quality_report_snapshot),
             "model": (model or "").strip() or None,
             "rules_version": task["rules_version"], "status": "draft", "created_at": now,
         }
         self.store.conn.execute(
             "INSERT INTO drafts (knowledge_id, revision, task_id, project_id, stage, title,"
             " knowledge_type, topics, body_md, content_hash, sources_json, gaps_json,"
-            " human_inputs_json, section_check_json, quality_json, model, rules_version, status, created_at)"
+            " human_inputs_json, section_check_json, quality_json, quality_report_json, model, rules_version, status, created_at)"
             " VALUES (:knowledge_id, :revision, :task_id, :project_id, :stage, :title,"
             " :knowledge_type, :topics, :body_md, :content_hash, :sources_json, :gaps_json,"
-            " :human_inputs_json, :section_check_json, :quality_json, :model, :rules_version, :status,"
+            " :human_inputs_json, :section_check_json, :quality_json, :quality_report_json, :model, :rules_version, :status,"
             " :created_at)", record)
         self.store.conn.execute(
             "UPDATE distill_tasks SET status = 'draft_submitted', updated_at = ? WHERE task_id = ?",
@@ -589,6 +591,8 @@ class Distill:
         record.pop("section_check_json", None)
         record["quality_check"] = db.loads(record["quality_json"], {})
         record.pop("quality_json", None)
+        record["quality_report"] = db.loads(record["quality_report_json"], {})
+        record.pop("quality_report_json", None)
         task = db.rowdict(self.store.conn.execute(
             "SELECT rules_hash, status FROM distill_tasks WHERE task_id = ?",
             (record["task_id"],)).fetchone())

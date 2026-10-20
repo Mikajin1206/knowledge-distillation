@@ -124,6 +124,7 @@ CREATE TABLE IF NOT EXISTS drafts (
   human_inputs_json TEXT NOT NULL DEFAULT '[]',
   section_check_json TEXT NOT NULL DEFAULT '{}',
   quality_json TEXT NOT NULL DEFAULT '{}',
+  quality_report_json TEXT NOT NULL DEFAULT '{}',
   model TEXT,
   rules_version TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'draft',
@@ -149,6 +150,7 @@ _MIGRATIONS = (
     ("drafts", "human_inputs_json", "TEXT NOT NULL DEFAULT '[]'"),
     ("drafts", "section_check_json", "TEXT NOT NULL DEFAULT '{}'"),
     ("drafts", "quality_json", "TEXT NOT NULL DEFAULT '{}'"),
+    ("drafts", "quality_report_json", "TEXT NOT NULL DEFAULT '{}'"),
 )
 
 # 常见办公格式在部分系统的 mimetypes 表中缺失，这里补齐。

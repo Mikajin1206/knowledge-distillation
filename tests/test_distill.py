@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import tempfile
 import unittest
 import zipfile
@@ -81,6 +82,15 @@ class DistillTest(unittest.TestCase):
     def _sources(self, location="全文"):
         return [{"file_id": self.file_id, "version_id": self.version_id,
                  "location": location, "supports": "正文示例"}]
+
+    def test_existing_database_migrates_quality_report_snapshot_column(self):
+        self.store.conn.execute("ALTER TABLE drafts DROP COLUMN quality_report_json")
+        self.store.conn.commit()
+        self.store.conn.close()
+        migrated = Store(self.tmp / "data")
+        columns = {row[1] for row in migrated.conn.execute("PRAGMA table_info(drafts)")}
+        self.assertIn("quality_report_json", columns)
+        migrated.conn.close()
 
     def test_stage_must_be_valid(self):
         with self.assertRaises(ValueError):
@@ -178,8 +188,33 @@ class DistillTest(unittest.TestCase):
         self.distill.attach(task["task_id"], self.file_id)
         self.distill.declare_gap(task["task_id"], "缺少验收报告")
         self.distill.add_input(task["task_id"], "赵六", "实际未用该模块")
+        source_sha = self.store.get_file(self.file_id)["versions"][0]["sha256"]
+        flowchart = {
+            "asset_id": f"{self.file_id}:word/document.xml:rId1:1",
+            "asset_type": "process_flow",
+            "source_file_id": self.file_id,
+            "source_version_id": self.version_id,
+            "source_sha256": source_sha,
+            "source_location": "word/document.xml drawing 1",
+            "checked_against_original": True,
+            "nodes": [{"id": "start", "name": "开始", "type": "start"},
+                      {"id": "approve", "name": "审批", "type": "activity", "role": "经理"},
+                      {"id": "end", "name": "结束", "type": "end"}],
+            "edges": [{"from": "start", "to": "approve", "direction": "start→approve",
+                       "relationship": "sequence", "condition": "", "action": "提交",
+                       "verified_against_original": True},
+                      {"from": "approve", "to": "end", "direction": "approve→end",
+                       "relationship": "sequence", "condition": "通过", "action": "完成",
+                       "verified_against_original": True}],
+            "unresolved_items": [],
+        }
+        quality_report = {"asset_reviews": [], "flowcharts": [flowchart],
+                          "table_checks": [], "evidence": {"reading_coverage": "complete"}}
+        body = (BODY + f"\n## 图像与流程资产 <!-- kd-section id=visual_assets rag=body -->\n\n"
+                f"审批流程图；完整结构引用 asset_id={flowchart['asset_id']}。\n")
         draft = self._submit(task["task_id"], "调研结论样例", "方案设计",
-                                          BODY, self._sources(), model="unittest-stub")
+                             body, self._sources(), model="unittest-stub",
+                             quality_report=quality_report)
         self.assertEqual(1, draft["revision"])
         self.assertEqual("draft", draft["status"])
         self.assertEqual(1, len(draft["sources"]))
@@ -192,8 +227,16 @@ class DistillTest(unittest.TestCase):
         self.assertTrue(check["match"])
         self.assertEqual(draft["content_hash"], check["content_hash_actual"])
         sidecar = json.loads(Path(out["json"]).read_text(encoding="utf-8"))
-        self.assertEqual("ckp-distilled-knowledge/v0.3", sidecar["schema"])
+        self.assertEqual("ckp-distilled-knowledge/v0.4", sidecar["schema"])
         self.assertTrue(sidecar["rag_selection"]["routing_valid"])
+        self.assertEqual(quality_report, sidecar["quality_report"])
+        protected = sidecar["protected_assets"]["items"][0]
+        self.assertEqual("quality_report.flowcharts[0]", protected["payload_ref"])
+        self.assertEqual(self.file_id, protected["source"]["source_file_id"])
+        self.assertEqual(self.version_id, protected["source"]["source_version_id"])
+        canonical = json.dumps(flowchart, ensure_ascii=False, sort_keys=True,
+                               separators=(",", ":")).encode("utf-8")
+        self.assertEqual(hashlib.sha256(canonical).hexdigest(), protected["payload_sha256"])
         self.assertEqual("scored", sidecar["quality_check"]["status"])
         self.assertEqual("test-score-v1", sidecar["quality_check"]["score_version"])
         self.assertIn("quality_score", md_path.read_text(encoding="utf-8"))

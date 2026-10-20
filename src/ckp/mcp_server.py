@@ -259,8 +259,12 @@ def distill_quality_report_template(task_id: str,
         manifest = json.loads(scans[material["file_id"]]["manifest_json"])
         for asset in manifest.get("assets", []):
             if asset["asset_id"] not in excluded_asset_ids:
-                asset_reviews.append({"asset_id": asset["asset_id"], "category": "",
-                                      "status": "", "description": "", "body_ref": ""})
+                asset_reviews.append({"asset_id": asset["asset_id"],
+                                      "source_file_id": material["file_id"],
+                                      "source_version_id": material["version_id"],
+                                      "source_sha256": material["sha256"],
+                                      "source_location": asset.get("location") or asset.get("block_ref", ""),
+                                      "category": "", "status": "", "description": "", "body_ref": ""})
         if manifest.get("format") == "docx":
             for table in manifest.get("tables", []):
                 table_checks.append({"file_id": material["file_id"], "kind": "docx",
@@ -276,7 +280,7 @@ def distill_quality_report_template(task_id: str,
                                             "illustration", "photo", "other"],
                 "asset_reviews.status": ["reviewed"],
                 "irrelevant_asset_ids": "核心正文范围外的图片（封面、目录、对象说明、版本记录、图例等）及确认无关装饰图放在此数组；不调用视觉工具、不写入 MD 或流程图。页眉/页脚图片已由扫描器自动跳过。",
-                "flowcharts": "每个 category 为 flowchart/process_diagram 的资产必须有一项；节点含 id/name，边含 from/to/direction/condition/action/verified_against_original=true，复原项含 checked_against_original=true 与 body_ref。",
+                "flowcharts": "每个 category 为 flowchart/process_diagram 的资产必须有一项完整结构对象；保留 asset_id、asset_type、source_file_id、source_version_id、source_sha256、source_location、checked_against_original、nodes、edges、groups/lanes/layout（原图能识别时）和 unresolved_items。节点保留 id/name/type/role/label；边保留 from/to/direction/relationship/condition/action/label/verified_against_original。不得用 Mermaid 或摘要替代此对象。若不能确认完整性，保留已识别内容并标记 unresolved_items，不得声称完整复原。",
                 "table_checks.status": ["reviewed", "not_relevant"],
                 "table_checks.key": ["file_id", "kind", "table_id"],
                 "body_ref": "必须是蒸馏 Markdown 正文中原样存在的定位文本。",

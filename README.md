@@ -1,5 +1,7 @@
 # Knowledge Distillation
 
+[简体中文](README.zh-CN.md) · [English](README.md)
+
 **Knowledge Distillation** is a local-first workflow for turning selected Word documents into traceable project knowledge drafts. It stores project originals, guides a client-side model through lifecycle-wide evidence, and exports Markdown with source metadata and a verifiable content hash.
 
 The project is designed for WorkBuddy and compatible stdio MCP clients. Its current storage adapter is local; company file-server integration and RAG publishing are separate deployment work.

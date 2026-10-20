@@ -1,0 +1,26 @@
+# Local originals, databases, generated knowledge, and temporary material
+/data/
+/output/
+/tmp/
+
+# Python environments and generated files
+/.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local configuration and OS files
+.env
+.env.*
+!.env.example
+*.mcp.json
+.DS_Store
+
+# SQLite files and transient journals
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*

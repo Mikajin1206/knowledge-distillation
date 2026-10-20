@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "knowledge-distillation": {
+      "command": "/ABSOLUTE/PATH/TO/knowledge-distillation/ckp-mcp.sh",
+      "args": [],
+      "env": {
+        "CKP_DATA": "/PRIVATE/PATH/TO/knowledge-distillation-data",
+        "CKP_OUTPUT": "/PRIVATE/PATH/TO/knowledge-distillation-output"
+      }
+    }
+  }
+}

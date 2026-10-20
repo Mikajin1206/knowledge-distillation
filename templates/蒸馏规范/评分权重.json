@@ -1,0 +1,59 @@
+{
+  "version": "distill-score-v1",
+  "scale": {
+    "minimum": 0,
+    "maximum": 5,
+    "description": "每项由 0 到 5 分；业务人员可调整 dimensions.weight，权重合计必须为 100。"
+  },
+  "dimensions": [
+    {
+      "key": "core_coverage",
+      "label": "核心内容覆盖",
+      "weight": 25,
+      "owner": "client",
+      "rubric": "是否保留项目背景、目标、方案/步骤、结果与适用边界；缺失内容要标缺口。"
+    },
+    {
+      "key": "source_traceability",
+      "label": "来源可追溯性",
+      "weight": 25,
+      "owner": "server",
+      "rubric": "服务端按来源是否关联任务、版本与哈希是否一致、位置和支持范围是否清晰评分。"
+    },
+    {
+      "key": "factual_fidelity",
+      "label": "事实忠实度",
+      "weight": 20,
+      "owner": "client",
+      "rubric": "是否区分材料事实、人工补充、模型推断和待确认事项，是否避免编造或静默裁决冲突。"
+    },
+    {
+      "key": "structure_and_retrieval",
+      "label": "结构与检索可用性",
+      "weight": 15,
+      "owner": "server",
+      "rubric": "按必备章节和来源映射表的完整程度评分；缺少结构只扣分并记录，不阻止导出。"
+    },
+    {
+      "key": "media_handling",
+      "label": "图片与流程处理",
+      "weight": 10,
+      "owner": "client",
+      "rubric": "只评估核心正文中的相关图片；未识清、未复原或被排除的情况如实标记。无正文图片时不适用。"
+    },
+    {
+      "key": "table_handling",
+      "label": "表格处理",
+      "weight": 5,
+      "owner": "client",
+      "rubric": "检查对关键表格信息的保留和口径说明；不要求重复抄报服务端已知的表格行数。无表格时不适用。"
+    }
+  ],
+  "bands": [
+    {"minimum": 85, "label": "优先"},
+    {"minimum": 70, "label": "较高"},
+    {"minimum": 50, "label": "一般"},
+    {"minimum": 0, "label": "待提升"}
+  ],
+  "maintenance": "业务人员可编辑此文件调整各项 weight 和分档。新任务在启动时固化本版本与哈希，历史任务和草稿评分不随配置变化。"
+}

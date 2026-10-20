@@ -72,6 +72,7 @@ server = MCPServer(
         "draft_submit 前逐项填写 distill_guidance 快照中的所有 owner=client 评分维度，并补全模板中的图片与表格检查；不要先提交默认分再重复提交同一内容。若遗漏评分，保留当前草稿并披露评估覆盖，不为补分创建重复修订。"
         "用户混选 Word 与非 Word 时，先停止蒸馏并确认是否只用 Word 继续；非 Word 可作为原件保存，但不得读取或交给模型。"
         "排除封面、目录、对象说明、版本记录、正文前说明、图例、页眉页脚和无关装饰；只对核心正文相关图片调用 distill_word_image，语义由客户端多模态模型直接识别，不用 OCR。"
+        "知识 Markdown 只写业务事实、适用边界、冲突与缺口；业务事实不因标题层级、表格或清单形式改为元数据。章节路由只使用 body/exclude；来源映射、读取覆盖、模型/规范信息、质量证据和审核发布信息写入 sources/quality_report/sidecar，不创建 metadata/audit 正文章节。旧 metadata/audit 标记不自动迁移。"
         "来源必须绑定任务材料及其版本；服务端可自动补全粗粒度来源并降低来源评分。draft_export 已附正文哈希校验，通常无需再次调用 draft_verify。"
         "只用本 MCP 读取材料和检查导出，不用本机目录枚举/文件搜索、shell、其他 MCP 或 Office 工具。草稿未经项目经理审核，不代表发布或入库；写操作支持 request_id 幂等重试。"
     ),
@@ -383,8 +384,9 @@ def draft_submit(task_id: str, title: str, knowledge_type: str, body_md: str,
                  sources: list[dict] | None = None, model: str = "", knowledge_id: str = "",
                  topics: str = "", quality_report: dict | None = None,
                  request_id: str = "") -> dict:
-    """提交蒸馏草稿。body_md 为 UTF-8 Markdown 正文；推荐包含来源映射、冲突缺口与待确认项、
-    处理记录，缺少章节不阻断，记录在评分中。sources 可省略，服务按任务 Word 材料自动补全粗定位；
+    """提交蒸馏草稿。body_md 为 UTF-8 Markdown 正文；正文保留业务事实、冲突缺口与待确认项。
+    来源通过 sources 参数提供，读取覆盖和处理证据放入 quality_report；缺少推荐章节不阻断，记录在评分中。
+    sources 可省略，服务按任务 Word 材料自动补全粗定位；
     可选 source 为 {version_id, location, supports, file_id?, sha256?}，错误版本/哈希仍拒绝。
     quality_report 使用 scores/evidence/flags/unresolved_items，并可含 distill_quality_report_template 返回的 asset_reviews、
     irrelevant_asset_ids、flowcharts、table_checks。Word 流程应在首次提交时一并填充；缺项只记为未评与待提升，不阻止导出。

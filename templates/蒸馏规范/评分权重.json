@@ -1,5 +1,5 @@
 {
-  "version": "distill-score-v1",
+  "version": "distill-score-v2",
   "scale": {
     "minimum": 0,
     "maximum": 5,
@@ -32,7 +32,7 @@
       "label": "结构与检索可用性",
       "weight": 15,
       "owner": "server",
-      "rubric": "按必备章节和来源映射表的完整程度评分；缺少结构只扣分并记录，不阻止导出。"
+      "rubric": "按业务正文结构及 sources 来源绑定的完整程度评分；缺少结构只扣分并记录，不阻止导出。"
     },
     {
       "key": "media_handling",

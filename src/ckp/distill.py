@@ -24,13 +24,12 @@ from ckp.quality import load_score_policy, read_score_snapshot, score_quality, w
 # 与需求规格 4.2 的六个阶段一致；任务必须落在一个阶段，材料允许跨阶段。
 STAGES = ("立项与范围", "调研与需求", "方案与设计", "实施与变更", "测试与验收", "运维与改进")
 
-# 草稿正文的必备章节；必须有实际内容或“不适用+原因”，来源映射须含映射表。
-REQUIRED_SECTIONS = ("来源映射", "冲突、缺口与待确认项", "处理记录")
+# 正文只要求与知识适用性直接相关的冲突/缺口说明；来源、评分和处理证据由 sidecar 承载。
+REQUIRED_SECTIONS = ("冲突、缺口与待确认项",)
 KNOWN_SECTIONS = (
     "身份与适用范围", "背景、问题与目标", "流程、方案与选择依据",
     "执行步骤或问题解决过程", "实际结果与适用边界", "图像与流程资产",
-    "来源映射", "关联知识与过程变化", "冲突、缺口与待确认项", "处理记录",
-    "审核与发布引用",
+    "关联知识与过程变化", "冲突、缺口与待确认项",
 )
 
 # 客户端可使用自然的项目文档标题。将常见等价标题映射到模板章节，避免
@@ -476,7 +475,7 @@ class Distill:
             "missing_required": missing_required, "missing_known": missing_known,
             "invalid_required": invalid_required,
             "checked_rules_version": task["rules_version"],
-            "note": "缺失章节和来源映射不完整作为评分及待处理项记录，不阻止草稿导出",
+            "note": "业务章节缺失或来源绑定不完整作为评分及待处理项记录，不阻止草稿导出",
         }
         score_policy = read_score_snapshot(
             self.store.data_dir, task_id, self.score_policy_path)
@@ -495,7 +494,7 @@ class Distill:
             source_score = 0
             source_note = "任务没有可绑定的 Word 来源"
         section_score = max(0, 5 - 2 * len(missing_required) - len(invalid_required))
-        section_note = ("必备章节和来源映射结构齐全" if section_score == 5 else
+        section_note = ("必备业务章节结构齐全" if section_score == 5 else
                         "缺少或未填完整的章节将作为评分扣分项记录；草稿仍可导出")
         scan_rows = self.store.conn.execute(
             "SELECT manifest_json FROM task_office_scans WHERE task_id = ? ORDER BY file_id",
@@ -622,17 +621,12 @@ def _sections(body_md: str) -> dict[str, str]:
     for index, match in enumerate(matches):
         title = re.sub(
             r"\s*<!--\s*kd-section\s+id=[a-z][a-z0-9_-]*\s+"
-            r"rag=(?:body|metadata|audit|exclude)\s*-->\s*$", "",
+            r"rag=(?:body|exclude)\s*-->\s*$", "",
             match.group(1).strip())
         end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
         out.setdefault(title, "")
         out[title] += text[match.end():end]
     return out
-
-
-def _has_table(content: str) -> bool:
-    return any(re.match(r"^\|(\s*:?-+:?\s*\|)+\s*$", line.strip())
-               for line in content.splitlines())
 
 
 def _content_ok(content: str) -> bool:
@@ -660,12 +654,7 @@ def check_body(body_md: str) -> tuple[list[str], list[str], list[str]]:
         content = find(name)
         if content is None:
             continue
-        if name == "来源映射":
-            if not _has_table(content):
-                invalid_required.append(f"{name}: 缺少来源映射表格（| 列 |…| 形式）")
-            elif not _content_ok(content):
-                invalid_required.append(f"{name}: 表格之外无有效内容")
-        elif not _content_ok(content):
+        if not _content_ok(content):
             invalid_required.append(f"{name}: 章节为空，或“不适用”未写明原因")
     missing_known = [s for s in KNOWN_SECTIONS
                      if s not in REQUIRED_SECTIONS and find(s) is None]

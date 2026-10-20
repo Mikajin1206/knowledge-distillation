@@ -20,10 +20,8 @@ from ckp import db
 
 # frontmatter 中只放标量与字符串列表；完整来源/补充/缺口/检查记录在 sidecar。
 FM_SCALARS = ("knowledge_id", "revision", "title", "knowledge_type", "status",
-              "project_id", "project_name", "stage", "owner", "task_id",
-              "rules_version", "model", "quality_score", "quality_score_version",
-              "created_at", "content_hash")
-FM_LISTS = ("topics", "industry", "products")
+              "project_id", "project_name", "quality_score", "content_hash")
+FM_LISTS = ("products",)
 
 
 def render_frontmatter(meta: dict) -> str:
@@ -57,13 +55,13 @@ _UNESCAPE = {'"': '"', "\\": "\\", "n": "\n", "r": "\r", "t": "\t"}
 #   <!-- kd-section id=procurement rag=body -->
 _RAG_MARKER_RE = re.compile(
     r"\s*<!--\s*kd-section\s+id=([a-z][a-z0-9_-]*)\s+"
-    r"rag=(body|metadata|audit|exclude)\s*-->\s*$"
+    r"rag=(body|exclude)\s*-->\s*$"
 )
 _SECTION_HEADING_RE = re.compile(r"^(#{2,6})\s+(.+?)\s*$", re.M)
 
 
 def extract_rag_payload(md_text: str) -> dict:
-    """Split marked H2-H6 sections into retrieval text, metadata, and audit routes.
+    """Split marked H2-H6 sections into retrieval and excluded routes.
 
     Missing, malformed, or duplicate markers fail closed: no body text is
     returned for indexing. Heading wording is preserved for display only and
@@ -105,14 +103,6 @@ def extract_rag_payload(md_text: str) -> dict:
 
     routing_valid = not errors
     body_sections = [item for item in sections if item["route"] == "body"] if routing_valid else []
-    metadata_sections = {
-        item["id"]: {"title": item["title"], "content": item["content"]}
-        for item in sections if routing_valid and item["route"] == "metadata"
-    }
-    audit_sections = {
-        item["id"]: {"title": item["title"], "content": item["content"]}
-        for item in sections if routing_valid and item["route"] == "audit"
-    }
     retrieval_md = "\n\n".join(
         f"## {' / '.join(item['heading_path'])}\n\n{item['content']}"
         for item in body_sections
@@ -121,7 +111,7 @@ def extract_rag_payload(md_text: str) -> dict:
                  ("id", "title", "level", "heading_path", "route", "content_sha256")}
                 for item in sections]
     return {
-        "schema": "kd-rag-selection/v1",
+        "schema": "kd-rag-selection/v2",
         "routing_valid": routing_valid,
         "errors": errors,
         "metadata": {"knowledge_id": frontmatter.get("knowledge_id"),
@@ -131,19 +121,25 @@ def extract_rag_payload(md_text: str) -> dict:
                      "status": frontmatter.get("status"),
                      "project_id": frontmatter.get("project_id"),
                      "project_name": frontmatter.get("project_name"),
-                     "owner": frontmatter.get("owner"),
-                     "stage": frontmatter.get("stage"),
-                     "industry": frontmatter.get("industry", []),
                      "products": frontmatter.get("products", []),
-                     "topics": frontmatter.get("topics", []),
                      "quality_score": frontmatter.get("quality_score"),
-                     "quality_score_version": frontmatter.get("quality_score_version"),
                      "content_hash": frontmatter.get("content_hash")},
         "sections": manifest,
         "retrieval_md": retrieval_md if routing_valid else "",
-        "metadata_sections": metadata_sections if routing_valid else {},
-        "audit_sections": audit_sections if routing_valid else {},
     }
+
+
+_PRODUCT_SCOPE_RE = re.compile(r"^\s*(?:[-*]\s*)?产品范围[：:]\s*(.+?)\s*$", re.M)
+
+
+def extract_products(body_md: str) -> list[str]:
+    """Extract only explicitly labeled product names, never project-master tags."""
+    match = _PRODUCT_SCOPE_RE.search(body_md)
+    if not match:
+        return []
+    values = re.split(r"[；;]", match.group(1))
+    return list(dict.fromkeys(value.strip(" \t，,。；;") for value in values
+                              if value.strip(" \t，,。；;")))
 
 
 def _unyq(raw: str) -> str:
@@ -159,13 +155,14 @@ def build_sidecar(draft: dict, project: dict) -> dict:
         "knowledge_id": draft["knowledge_id"], "revision": draft["revision"],
         "title": draft["title"], "knowledge_type": draft["knowledge_type"],
         "status": draft["status"], "project_id": project["project_id"],
-        "project_name": project["name"], "stage": draft["stage"],
-        "topics": draft["topics"], "industry": project["industry"],
-        "products": project["products"],
+        "project_name": project["name"],
+        "quality_score": (draft.get("quality_check") or {}).get("weighted_score"),
+        "content_hash": draft["content_hash"],
+        "products": extract_products(draft["body_md"]),
     }) + draft["body_md"]
     rag_payload = extract_rag_payload(rendered_md)
     return {
-        "schema": "ckp-distilled-knowledge/v0.2",
+        "schema": "ckp-distilled-knowledge/v0.3",
         "knowledge_id": draft["knowledge_id"],
         "revision": draft["revision"],
         "title": draft["title"],
@@ -208,13 +205,9 @@ def export_draft(draft: dict, project: dict, out_dir: Path,
     stem = f"{draft['knowledge_id']}_rev{draft['revision']:03d}"
     meta = {key: draft.get(key) for key in FM_SCALARS}
     meta["project_name"] = project["name"]
-    meta["industry"] = project["industry"]
-    meta["products"] = project["products"]
-    meta["owner"] = project["owner"]
-    meta["topics"] = draft["topics"]
+    meta["products"] = extract_products(draft["body_md"])
     quality_check = draft.get("quality_check") or {}
     meta["quality_score"] = quality_check.get("weighted_score")
-    meta["quality_score_version"] = quality_check.get("score_version")
     md_text = render_frontmatter(meta) + draft["body_md"]
     md_path = project_dir / f"{stem}.md"
     json_path = project_dir / f"{stem}.json"

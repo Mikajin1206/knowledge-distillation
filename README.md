@@ -6,6 +6,16 @@
 
 The project is designed for WorkBuddy and compatible stdio MCP clients. Its current storage adapter is local; company file-server integration and RAG publishing are separate deployment work.
 
+## Developer documentation
+
+The current product requirements, implementation handoff, and downstream acceptance criteria are available in Chinese:
+
+- [Product requirements](docs/01-%E9%9C%80%E6%B1%82%E8%A7%84%E6%A0%BC.md)
+- [Current implementation and RAG handoff contract](docs/05-%E4%B8%8A%E4%BC%A0%E8%92%B8%E9%A6%8F%E4%B8%8EMD%E4%BA%A7%E5%87%BA%E4%BA%A4%E6%8E%A5%E6%96%87%E6%A1%A3.md)
+- [Downstream development and acceptance standards](docs/%E4%B8%8B%E6%B8%B8%E5%BC%80%E5%8F%91%E9%A1%BB%E7%9F%A5%E4%B8%8E%E9%AA%8C%E6%94%B6%E6%A0%87%E5%87%86.md)
+
+Historical test reports, process logs, customer files, and local configuration are intentionally excluded from this public repository.
+
 ## What it does
 
 - Stores original files with project metadata, lifecycle stage, tags, uploader, SHA-256, and version history. Upload does not parse, distill, or index files.

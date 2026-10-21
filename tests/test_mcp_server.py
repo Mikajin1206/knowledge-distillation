@@ -94,7 +94,7 @@ class McpServerEndToEnd(unittest.TestCase):
             "clientInfo": {"name": "ckp-e2e", "version": "0"}})
         server_info = init["result"]["serverInfo"]
         self.assertEqual("Knowledge Distillation", server_info["name"])
-        self.assertEqual("1.1.0", server_info["version"])
+        self.assertEqual("1.1.1", server_info["version"])
         instructions = init["result"].get("instructions", "")
         self.assertIn("distill_word_content", instructions)
         self.assertIn("distill_word_image", instructions)
@@ -106,12 +106,17 @@ class McpServerEndToEnd(unittest.TestCase):
         self.assertIn("一次提交来源和完整 quality_report", instructions)
         self.assertIn("本机目录枚举/文件搜索", instructions)
         self.assertIn("draft_verify", instructions)
+        self.assertIn("project_list", instructions)
+        self.assertIn("同一项目沿用清单规范名称并再次确认", instructions)
+        self.assertIn("若确认是不同项目，保留项目经理提供的新名称", instructions)
+        self.assertIn("项目名称未提供或项目归属未确认前不得上传", instructions)
+        self.assertIn("项目名称未提供或项目归属未确认前不得上传", instructions)
         self._send({"jsonrpc": "2.0", "method": "notifications/initialized"})
         # 2 工具清单
         tools = self._request("tools/list")["result"]["tools"]
         names = {tool["name"] for tool in tools}
         schemas = {tool["name"]: tool.get("inputSchema", {}) for tool in tools}
-        expected = {"project_create", "upload_original", "file_list", "file_read_version",
+        expected = {"project_create", "project_list", "upload_original", "file_list", "file_read_version",
                     "distill_stages", "distill_start", "distill_attach", "distill_gap",
                     "distill_input", "distill_guidance", "distill_material", "distill_show",
                     "distill_quality_report_template",
@@ -120,17 +125,24 @@ class McpServerEndToEnd(unittest.TestCase):
                     "draft_verify"}
         self.assertTrue(expected <= names, msg=f"缺少工具: {expected - names}")
         self.assertIn("quality_report", schemas["draft_submit"].get("properties", {}))
+        self.assertEqual(30, schemas["distill_word_content"]["properties"]["limit"]["default"])
         preflight = self._call("distill_stages", {})
         self.assertEqual(6, len(preflight["stages"]))
         info = preflight["server_info"]
-        self.assertEqual("1.1.0", info["server_version"])
+        self.assertEqual("1.1.1", info["server_version"])
         self.assertEqual("ckp-office-inspector-v0.3", info["parser_version"])
+        self.assertEqual("ckp-emfplus-bitmap-lo-fallback-v6", info["image_renderer_version"])
         self.assertEqual(["svg", "emf", "wmf", "bmp", "tif", "tiff"],
                          info["image_formats_converted_to_png"])
         self.assertFalse(info["ocr"])
         # 3 业务流
         project = self._unwrap(self._call(
             "project_create", {"name": "MCP演示", "owner": "张三"}))["project_id"]
+        project_response = self._request(
+            "tools/call", {"name": "project_list", "arguments": {}})["result"]
+        projects = project_response.get("structuredContent", {}).get("result", [])
+        self.assertTrue(any(item["project_id"] == project and item["name"] == "MCP演示"
+                            for item in projects))
         src = write_minimal_docx(self.tmp / "材料.docx", "# 需求纪要\n关键规则：示例。")
         upload = self._unwrap(self._call(
             "upload_original", {"path": str(src), "project": project,

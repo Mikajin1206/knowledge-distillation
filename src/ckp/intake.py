@@ -1,6 +1,6 @@
 """文件清单、内容哈希与 Office 元数据提取。
 
-原件清单与 Office 元数据提取。
+改造自旧工程 company-brain/app/common/intake.py（SHA-256 275722b0560b316bb9ac0401a7e619f740ddf03552d2df4ffd45c32cacdc8eee）：
 - 保留 inventory 的目录遍历与安全处理、流式 sha256、Office docProps 元数据提取。
 - 移除旧解析流水线的扩展名排除表与分类规则（classify_document/_rules/_FORM_PATTERNS）：
   V2 上传只保存原件，不因“不可解析”丢弃文件。

@@ -72,6 +72,7 @@ def score_quality(policy: dict, assessment: Any, *, source_score: int,
     weighted_total = 0.0
     coverage_weight = 0
     invalid_scores = []
+    unassessed_dimensions = []
     for dimension in policy["dimensions"]:
         key = dimension["key"]
         weight = dimension["weight"]
@@ -97,6 +98,8 @@ def score_quality(policy: dict, assessment: Any, *, source_score: int,
                 coverage_weight += weight
             except (TypeError, ValueError):
                 score, note, origin = 0, "未提供有效评分，暂按 0 分记录；草稿仍可导出", "unassessed"
+                if dimension.get("owner") == "client":
+                    unassessed_dimensions.append(key)
                 if raw is not None:
                     invalid_scores.append(key)
         weighted_total += float(score) / 5.0 * weight
@@ -107,11 +110,15 @@ def score_quality(policy: dict, assessment: Any, *, source_score: int,
     flags_out = [str(flag) for flag in flags if str(flag).strip()]
     if invalid_scores:
         flags_out.append("评分字段格式错误或超出 0-5，相关项按未评记录")
+    if unassessed_dimensions:
+        flags_out.append("客户端评分维度未评，综合分含暂按 0 分计入项: "
+                         + "、".join(unassessed_dimensions))
     total_score = round(weighted_total, 2)
     assessment_coverage = round(coverage_weight + sum(
         d["weight"] for d in dimensions_out if d["assessment"] == "server_checked"), 2)
     return {
         "status": "scored" if assessment_coverage else "unassessed",
+        "assessment_status": "partial" if unassessed_dimensions else "complete",
         "score_version": policy["version"],
         "score_policy_hash": policy["hash"],
         "weighted_score": total_score,
@@ -119,6 +126,7 @@ def score_quality(policy: dict, assessment: Any, *, source_score: int,
         "priority_band": next((band["label"] for band in policy.get("bands", [])
                                 if total_score >= band.get("minimum", 101)), "待评估"),
         "dimensions": dimensions_out,
+        "unassessed_dimensions": unassessed_dimensions,
         "flags": flags_out,
         "unresolved_items": assessment.get("unresolved_items", []),
         "note": "评分用于后续知识排序与质量提示；不等于人工审核，也不阻止草稿产出。",

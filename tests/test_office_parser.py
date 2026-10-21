@@ -3,13 +3,65 @@ from __future__ import annotations
 
 import tempfile
 import sqlite3
+import struct
 import unittest
 import zipfile
+import zlib
+from types import SimpleNamespace
 from pathlib import Path
+from unittest.mock import patch
 
 from tests._path import *  # noqa: F401,F403
 from ckp.distill import validate_quality_report
-from ckp.office_parser import PARSER_VERSION, _find_soffice, _sha256, inspect_office, render_image_for_mcp
+from ckp.office_parser import (PARSER_VERSION, _find_soffice, _png_is_blank, _render_emfplus_bitmap, _trim_png_canvas,
+                               _sha256, inspect_office, render_image_for_mcp)
+
+
+def _png_chunk(kind: bytes, data: bytes) -> bytes:
+    return (struct.pack(">I", len(data)) + kind + data
+            + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff))
+
+
+def _rgb_png(width: int, height: int, pixels: bytes) -> bytes:
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    scanlines = b"".join(b"\0" + pixels[row * width * 3:(row + 1) * width * 3]
+                         for row in range(height))
+    return (b"\x89PNG\r\n\x1a\n" + _png_chunk(b"IHDR", header)
+            + _png_chunk(b"IDAT", zlib.compress(scanlines)) + _png_chunk(b"IEND", b""))
+
+
+def _emfplus_bitmap_fixture(*, width=2, height=1, stride=8,
+                            pixel_format=0x000E200B,
+                            pixels=bytes((0, 0, 128, 128, 255, 0, 0, 255)),
+                            object_flags=0x0501) -> bytes:
+    bitmap = struct.pack("<IIiiiII", 0xDBC01002, 1, width, height, stride,
+                         pixel_format, 0) + pixels
+    plus_header = struct.pack("<HHII", 0x4001, 0, 28, 16) + bytes(16)
+    plus_object = struct.pack("<HHII", 0x4008, object_flags, 12 + len(bitmap), len(bitmap)) + bitmap
+    plus_eof = struct.pack("<HHII", 0x4002, 0, 12, 0)
+    comment_data = b"EMF+" + plus_header + plus_object + plus_eof
+    comment = struct.pack("<III", 70, 12 + len(comment_data), len(comment_data)) + comment_data
+    header = struct.pack("<II", 1, 88) + bytes(80)
+    eof = struct.pack("<II", 14, 8)
+    return header + comment + eof
+
+
+def _png_rgb_scanlines(path: Path) -> tuple[int, int, bytes]:
+    raw = path.read_bytes()
+    width, height, depth, color_type, *_ = struct.unpack_from(">IIBBBBB", raw, 16)
+    compressed = bytearray()
+    offset = 8
+    while offset + 12 <= len(raw):
+        size = struct.unpack_from(">I", raw, offset)[0]
+        kind = raw[offset + 4:offset + 8]
+        if kind == b"IDAT":
+            compressed.extend(raw[offset + 8:offset + 8 + size])
+        if kind == b"IEND":
+            break
+        offset += size + 12
+    if depth != 8 or color_type != 2:
+        raise AssertionError("expected 8-bit RGB PNG")
+    return width, height, zlib.decompress(compressed)
 
 
 class OfficeParserTest(unittest.TestCase):
@@ -26,6 +78,70 @@ class OfficeParserTest(unittest.TestCase):
     def _inspect(self, path: Path) -> dict:
         return inspect_office(path, self.tmp / (path.stem + "-out"), file_id="f-test",
                               version_id="v1", expected_sha256=_sha256(path))
+
+    def test_png_blank_guard_distinguishes_blank_from_diagram_pixels(self):
+        blank = self.tmp / "blank.png"
+        blank.write_bytes(_rgb_png(2, 2, b"\xff\xff\xff" * 4))
+        diagram = self.tmp / "diagram.png"
+        diagram.write_bytes(_rgb_png(2, 1, b"\xff\xff\xff\0\0\0"))
+        self.assertTrue(_png_is_blank(blank))
+        self.assertFalse(_png_is_blank(diagram))
+
+    def test_png_canvas_trim_crops_small_diagram_from_oversized_white_margin(self):
+        pixels = bytearray(b"\xff\xff\xff" * (100 * 100))
+        for y in range(40, 60):
+            for x in range(40, 60):
+                index = (y * 100 + x) * 3
+                pixels[index:index + 3] = b"\0\0\0"
+        image = self.tmp / "oversized.png"
+        image.write_bytes(_rgb_png(100, 100, bytes(pixels)))
+        self.assertTrue(_trim_png_canvas(image))
+        cropped = image.read_bytes()
+        width, height = struct.unpack_from(">II", cropped, 16)
+        self.assertLess(width, 30)
+        self.assertLess(height, 30)
+        self.assertFalse(_png_is_blank(image))
+
+    def test_emfplus_embedded_bitmap_renders_without_libreoffice(self):
+        source = self.tmp / "diagram.emf"
+        source.write_bytes(_emfplus_bitmap_fixture())
+        with patch("ckp.office_parser._find_soffice", side_effect=AssertionError("unexpected LibreOffice fallback")):
+            rendered = render_image_for_mcp(source, self.tmp / "rendered")
+        self.assertFalse(_png_is_blank(rendered))
+        width, height, pixels = _png_rgb_scanlines(rendered)
+        self.assertEqual((2, 1), (width, height))
+        self.assertEqual(b"\0\xff\x7f\x7f\x00\x00\xff", pixels)
+
+    def test_emfplus_negative_stride_restores_top_down_row_order(self):
+        # Negative stride stores bottom row first: opaque blue, then opaque red.
+        source = self.tmp / "bottom-up.emf"
+        source.write_bytes(_emfplus_bitmap_fixture(
+            width=1, height=2, stride=-4, pixel_format=0x00022009,
+            pixels=bytes((255, 0, 0, 0, 0, 0, 255, 0))))
+        target = self.tmp / "bottom-up.png"
+        self.assertTrue(_render_emfplus_bitmap(source, target))
+        self.assertEqual((1, 2, b"\0\xff\0\0\0\0\0\xff"), _png_rgb_scanlines(target))
+
+    def test_emfplus_argb_composites_transparency_on_white(self):
+        source = self.tmp / "alpha.emf"
+        # Transparent red and half-alpha red in straight BGRA storage.
+        source.write_bytes(_emfplus_bitmap_fixture(
+            pixels=bytes((0, 0, 255, 0, 0, 0, 255, 128)),
+            pixel_format=0x0026200a))
+        target = self.tmp / "alpha.png"
+        self.assertTrue(_render_emfplus_bitmap(source, target))
+        self.assertEqual((2, 1, b"\0\xff\xff\xff\xff\x7f\x7f"),
+                         _png_rgb_scanlines(target))
+
+    def test_emfplus_rejects_truncated_records_without_writing_png(self):
+        source = self.tmp / "truncated.emf"
+        malformed = bytearray(_emfplus_bitmap_fixture())
+        struct.pack_into("<I", malformed, 0, 70)  # record extends past EOF
+        struct.pack_into("<I", malformed, 4, len(malformed) + 1)
+        source.write_bytes(malformed)
+        target = self.tmp / "truncated.png"
+        self.assertFalse(_render_emfplus_bitmap(source, target))
+        self.assertFalse(target.exists())
 
     def test_docx_preserves_paragraphs_tables_and_image_refs(self):
         path = self._package("sample.docx", {
@@ -75,6 +191,35 @@ class OfficeParserTest(unittest.TestCase):
         self.assertEqual(".png", rendered.suffix)
         self.assertGreater(rendered.stat().st_size, 100)
         self.assertEqual(b"\x89PNG\r\n\x1a\n", rendered.read_bytes()[:8])
+
+    def test_blank_direct_render_uses_pdf_raster_fallback(self):
+        source = self.tmp / "vector.emf"
+        source.write_bytes(b"fixture")
+        blank = _rgb_png(2, 2, b"\xff\xff\xff" * 4)
+        diagram = _rgb_png(2, 1, b"\xff\xff\xff\0\0\0")
+        calls = []
+
+        def fake_run(command, **_kwargs):
+            calls.append(command)
+            if "--convert-to" in command and command[command.index("--convert-to") + 1] == "png":
+                (Path(command[command.index("--outdir") + 1]) / "vector.png").write_bytes(blank)
+            elif "--convert-to" in command and command[command.index("--convert-to") + 1] == "pdf":
+                pdf_dir = Path(command[command.index("--outdir") + 1])
+                (pdf_dir / "vector.pdf").write_bytes(b"pdf")
+            elif "-singlefile" in command:
+                Path(command[-1] + ".png").write_bytes(diagram)
+            else:
+                raise AssertionError(f"unexpected command: {command}")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with patch("ckp.office_parser._find_soffice", return_value="/fake/soffice"), \
+             patch("ckp.office_parser._find_pdftoppm", return_value="/fake/pdftoppm"), \
+             patch("ckp.office_parser.subprocess.run", side_effect=fake_run):
+            result = render_image_for_mcp(source, self.tmp / "fallback")
+
+        self.assertTrue(result.is_file())
+        self.assertFalse(_png_is_blank(result))
+        self.assertEqual(3, len(calls))
 
     def test_docx_skips_header_and_footer_decorative_media(self):
         path = self._package("decorations.docx", {

@@ -10,7 +10,7 @@
   重复上传不产生新版本也不改变文件当前分类，提交内容是否应用在响应中明确返回。
 
 存储后端为本地内容寻址适配器（data/originals/<sha前2位>/<sha>）。
-公司文件服务器接入时替换本层适配器。
+公司文件服务器接入时替换本层，适配面见 docs/05。
 """
 from __future__ import annotations
 
@@ -167,7 +167,7 @@ class Store:
              submitted_stage, db.dumps(submitted_tags), now))
         self.conn.commit()
         # 分类策略：stage/tags 仅在文件首次创建时应用；重传提交的上下文
-        # 记录在上传记录中并可查，不静默改变文件当前分类。
+        # 记录在上传记录中并可查，不静默改变文件当前分类（docs/05 §3）。
         applied = action == "created"
         unchanged = (not applied and existing["stage"] == submitted_stage
                      and db.loads(existing["tags"], []) == submitted_tags)

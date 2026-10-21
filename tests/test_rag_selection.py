@@ -52,13 +52,22 @@ Do not publish.'''))
     def test_section_manifest_links_sources_and_protected_assets(self):
         sources = [{"source_ref_id": "file-1@version-1", "file_id": "file-1",
                     "version_id": "version-1", "sha256": "a" * 64}]
-        assets = [{"asset_id": "diagram-1", "body_ref": "asset_id=diagram-1"}]
+        assets = [{"asset_id": "diagram-1", "body_ref": "asset_id=diagram-1",
+                   "payload_ref": "quality_report.flowcharts[0]",
+                   "payload_sha256": "b" * 64,
+                   "payload": {"nodes": [{"id": "n1", "name": "Private full graph"}],
+                               "edges": [{"from": "n1", "to": "n2"}]}}]
         result = extract_rag_payload(md('''## Architecture <!-- kd-section id=architecture rag=body -->
 See asset_id=diagram-1 for the full structure.'''), assets, sources)
 
         section = result["sections"][0]
         self.assertEqual(sources, section["source_refs"])
         self.assertEqual(["diagram-1"], section["protected_asset_refs"])
+        self.assertEqual(result["document_ref"], section["document_ref"])
+        self.assertIn("See asset_id=diagram-1", result["retrieval_md"])
+        self.assertNotIn("payload_ref", result["retrieval_md"])
+        self.assertNotIn("payload_sha256", result["retrieval_md"])
+        self.assertNotIn("Private full graph", result["retrieval_md"])
 
     def test_legacy_routes_are_rejected_and_not_auto_mapped(self):
         for route in ("metadata", "audit"):

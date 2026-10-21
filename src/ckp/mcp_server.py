@@ -64,17 +64,18 @@ def _split_list(text: str | None) -> list[str]:
 
 server = MCPServer(
     "Knowledge Distillation",
-    version="1.1.0",
+    version="1.1.1",
     instructions=(
-        "Knowledge Distillation:项目名称必须由项目经理提供。上传前先调用现有 project_list 检查相同/相近名称；由项目经理判断是否同一项目，同一项目沿用清单规范名称并二次确认；不能从材料推断或自动合并。原件上传只保存，不解析、不蒸馏、不索引；只有 .doc/.docx 可蒸馏。"
-        "按 project → upload（只处理用户给定的完整路径，不枚举目录）→ distill_start/attach → distill_guidance（每任务一次）→ distill_word_content（分页读完）→ 核心图片识别 → distill_quality_report_template（排除无关图后调用一次）→ draft_submit（一次提交来源和完整 quality_report）→ draft_export → distill_close 执行。"
-        "质量分低、图片不确定、章节或来源定位不完整均记录为评分/待确认项，不阻止草稿提交；只有文件完整性、错误版本、无可用正文和非 Word 范围错误可阻断。"
+        "Knowledge Distillation:先在对话中确认处理意图；用户只说上传/提交/归档时仅保存原件，不解析、不蒸馏、不索引；用户明确提出蒸馏后才可启动任务，且只蒸馏用户明确指定的 Word。默认每份 Word 单独启动一个蒸馏任务并产出一份 MD。多份 Word 请求蒸馏时，提醒项目经理 MCP 支持将明确指定的一组文件合并分析并产出一份知识文件；未明确要求合并时无需等待选择，按逐份处理。“全部蒸馏”表示逐份处理，不代表合并。只有项目经理明确要求指定多份资料合并分析并共同产出一个知识文件时，才将该组材料关联到同一任务并提交一份综合 MD；不得按项目、阶段、主题或相似度自行合并。仅说关键文档但未指明文件时只追问一次具体范围。用户只说处理/整理等无法判断意图时，先询问仅归档还是同时蒸馏并询问文件范围，答复前不调用任何 MCP 工具。不得根据文件名、格式或内容替用户判断蒸馏意图/关键文档。合并稿保留各来源版本与冲突，不静默裁决。已明确上传并蒸馏及范围时不重复询问，先保存原件再蒸馏。只有 .doc/.docx 可蒸馏。项目名称必须由项目经理提供；上传前先调用现有 project_list 检查相同/相近名称并展示候选；由项目经理判断是否同一项目，同一项目沿用清单规范名称并再次确认；若确认是不同项目，保留项目经理提供的新名称；项目名称未提供或项目归属未确认前不得上传；不能从材料推断、自动改名或合并项目。"
+        "仅当用户明确提出蒸馏且范围明确时才调用 distill_stages，并记录 server_info.server_version、parser_version、image_renderer_version；缺少版本字段或版本与当前验收基线不符时停止图片验收并报告，不把旧 MCP 结果当作当前代码效果。只说上传/归档时不调用任何蒸馏预检或蒸馏工具。"
+        "按 project → upload（只处理用户给定的完整路径，不枚举目录）→（用户明确要求蒸馏后）distill_stages → distill_start/attach → distill_guidance（每任务一次）→ distill_word_content（limit 默认 30，按 has_more/next_offset 读完；若返回仍超限则减半，不得用 100 以上大页）→ 核心图片识别 → distill_quality_report_template（排除无关图后调用一次）→ draft_submit（一次提交来源和完整 quality_report）→ draft_export → distill_close 执行。"
+        "质量分低、图片不确定、章节或来源定位不完整均记录为评分/待确认项，不阻止草稿提交；只有文件完整性、错误版本、无可用正文和非 Word 范围错误可阻断。空白/无效图片转换由服务端拒绝并返回明确原因；保留原图、标记未识别，不要猜测流程。"
         "draft_submit 前逐项填写 distill_guidance 快照中的所有 owner=client 评分维度，并补全模板中的图片与表格检查；不要先提交默认分再重复提交同一内容。若遗漏评分，保留当前草稿并披露评估覆盖，不为补分创建重复修订。"
         "用户混选 Word 与非 Word 时，先停止蒸馏并确认是否只用 Word 继续；非 Word 可作为原件保存，但不得读取或交给模型。"
         "排除封面、目录、对象说明、版本记录、正文前说明、图例、页眉页脚和无关装饰；只对核心正文相关图片调用 distill_word_image，语义由客户端多模态模型直接识别，不用 OCR。"
-        "知识 Markdown 只写业务事实、适用边界、冲突与缺口；业务事实不因标题层级、表格或清单形式改为元数据。章节路由只使用 body/exclude；来源映射、读取覆盖、模型/规范信息、质量证据和审核发布信息写入 sources/quality_report/sidecar，不创建 metadata/audit 正文章节。旧 metadata/audit 标记不自动迁移。"
+        "MCP 负责用户指定材料的归档、解析/渲染、忠实蒸馏及技术来源追溯；不代项目经理审查或修订文档规范、签署/盖章、文件标识/版本/日期一致性、附件或测试验收材料齐套、方案决策闭环、编码/业务口径一致性，也不核对图像姓名与人员档案。不得主动开展此类审查、生成相关缺陷/待确认项或把它们列为 MCP 测试问题。忠实保留实际读取到的业务陈述，不判断其正确性、完整性或合规性；用户要求此类检查时说明超出 MCP 蒸馏范围。多文件明确合并时，保留来源及直接影响语义的陈述差异，不自行裁决。知识 Markdown 写入业务事实和适用边界；业务事实不因标题层级、表格或清单形式改为元数据。章节路由只使用 body/exclude；来源映射、读取覆盖、模型/规范信息、图片与表格技术证据和审核发布信息写入 sources/quality_report/sidecar，不创建 metadata/audit 正文章节。旧 metadata/audit 标记不自动迁移。"
         "来源必须绑定任务材料及其版本；服务端可自动补全粗粒度来源并降低来源评分。draft_export 已附正文哈希校验，通常无需再次调用 draft_verify。"
-        "只用本 MCP 读取材料和检查导出，不用本机目录枚举/文件搜索、shell、其他 MCP 或 Office 工具。草稿未经项目经理审核，不代表发布或入库；写操作支持 request_id 幂等重试。"
+        "只用本 MCP 读取材料和检查导出，不用本机目录枚举/文件搜索、shell、其他 MCP 或 Office 工具。完成后列明每份源 Word 对应的任务及 MD；合并时列出该综合 MD 的全部来源文件。草稿未经项目经理审核，不代表发布或入库；写操作支持 request_id 幂等重试。"
     ),
 )
 
@@ -83,11 +84,13 @@ server = MCPServer(
 
 def _server_capabilities() -> dict:
     from ckp.office_parser import (MCP_CONVERT_IMAGE_FORMATS,
+                                   IMAGE_RENDERER_VERSION,
                                    MCP_NATIVE_IMAGE_FORMATS, PARSER_VERSION)
     return {
         "server_name": "Knowledge Distillation",
-        "server_version": "1.1.0",
+        "server_version": "1.1.1",
         "parser_version": PARSER_VERSION,
+        "image_renderer_version": IMAGE_RENDERER_VERSION,
         "word_formats": [".doc", ".docx"],
         "image_reference_types": ["drawingml", "vml", "svg"],
         "image_formats_direct": list(MCP_NATIVE_IMAGE_FORMATS),
@@ -312,7 +315,7 @@ def _word_manifest(task_id: str, file_id: str):
 @server.tool()
 @_tool_errors
 def distill_word_content(task_id: str, file_id: str, offset: int = 0,
-                         limit: int = 250) -> dict:
+                         limit: int = 30) -> dict:
     """通过 MCP 返回已关联 Word 的提取正文、表格与图片说明，不返回本机文件路径。
     以 offset/limit 分页读取 blocks；has_more=true 时用 next_offset 继续。"""
     if offset < 0:
@@ -341,7 +344,8 @@ def distill_word_content(task_id: str, file_id: str, offset: int = 0,
 @_tool_errors
 def distill_word_image(task_id: str, file_id: str, asset_id: str) -> Image:
     """通过 MCP 图像内容返回指定 Word 图片，由客户端当前绑定的本地多模态模型直接识别。
-    PNG/JPEG/GIF/WebP 直接返回；SVG/EMF/WMF/BMP/TIFF 转为 PNG。服务端不做 OCR、图像描述或语义识别；不返回本机路径。"""
+    PNG/JPEG/GIF/WebP 直接返回；SVG/EMF/WMF/BMP/TIFF 转为 PNG，并拒绝全透明或单色空白转换结果。
+    服务端不做 OCR、图像描述或语义识别；不返回本机路径。"""
     _, _, manifest = _word_manifest(task_id, file_id)
     asset = next((item for item in manifest.get("assets", [])
                   if item.get("asset_id") == asset_id), None)
@@ -358,8 +362,9 @@ def distill_word_image(task_id: str, file_id: str, asset_id: str) -> Image:
     image_format = path.suffix.lower().lstrip(".")
     from ckp.office_parser import MCP_CONVERT_IMAGE_FORMATS, MCP_NATIVE_IMAGE_FORMATS
     if image_format in MCP_CONVERT_IMAGE_FORMATS:
-        from ckp.office_parser import render_image_for_mcp
-        path = render_image_for_mcp(path, task_root / "office" / file_id / "assets" / "mcp-rendered")
+        from ckp.office_parser import IMAGE_RENDERER_VERSION, render_image_for_mcp
+        path = render_image_for_mcp(
+            path, task_root / "office" / file_id / "assets" / "mcp-rendered" / IMAGE_RENDERER_VERSION)
         image_format = "png"
     if image_format not in MCP_NATIVE_IMAGE_FORMATS:
         raise ValueError(f"MCP 图像返回暂不支持该图片格式: {path.suffix or '(无扩展名)'}")
@@ -394,6 +399,7 @@ def draft_submit(task_id: str, title: str, knowledge_type: str, body_md: str,
     可选 source 为 {version_id, location, supports, file_id?, sha256?}，错误版本/哈希仍拒绝。
     quality_report 使用 scores/evidence/flags/unresolved_items，并可含 distill_quality_report_template 返回的 asset_reviews、
     irrelevant_asset_ids、flowcharts、table_checks。Word 流程应在首次提交时一并填充；缺项只记为未评与待提升，不阻止导出。
+    返回 quality_check.assessment_status、unassessed_dimensions 与 flags；提交后若为 partial，必须向用户说明评分覆盖和暂按 0 分计入的维度，不得只报告综合分。
     权重来自任务启动时固定的评分权重配置。续修订传 knowledge_id。"""
     return Distill(Store(_data_dir()), REPO_ROOT).submit_draft(
         task_id, title, knowledge_type, body_md, sources, model=model or None,

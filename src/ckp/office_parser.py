@@ -11,14 +11,17 @@ import json
 import os
 import re
 import shutil
+import struct
 import subprocess
 import tempfile
 import zipfile
+import zlib
 from pathlib import Path, PurePosixPath
 from typing import Any
 from xml.etree import ElementTree as ET
 
 PARSER_VERSION = "ckp-office-inspector-v0.3"
+IMAGE_RENDERER_VERSION = "ckp-emfplus-bitmap-lo-fallback-v6"
 NS = {
     "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
     "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
@@ -159,19 +162,327 @@ MCP_NATIVE_IMAGE_FORMATS = ("png", "jpg", "jpeg", "gif", "webp")
 MCP_CONVERT_IMAGE_FORMATS = ("svg", "emf", "wmf", "bmp", "tif", "tiff")
 
 
+def _find_pdftoppm() -> str | None:
+    found = shutil.which("pdftoppm")
+    if found:
+        return found
+    runtime_root = Path.home() / ".cache" / "codex-runtimes"
+    if runtime_root.is_dir():
+        candidates = sorted(runtime_root.glob("*/dependencies/bin/override/pdftoppm"))
+        return next((str(path) for path in candidates
+                     if path.is_file() and os.access(path, os.X_OK)), None)
+    return None
+
+
+def _png_is_blank(path: Path) -> bool:
+    """Detect fully transparent or single-color LibreOffice PNG output."""
+    raw = Path(path).read_bytes()
+    if not raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise ValueError("图片转换器生成的文件不是有效 PNG")
+    offset, width, height, depth, color_type, interlace = 8, 0, 0, 0, -1, 0
+    compressed = bytearray()
+    while offset + 12 <= len(raw):
+        length = struct.unpack_from(">I", raw, offset)[0]
+        kind = raw[offset + 4:offset + 8]
+        start, end = offset + 8, offset + 8 + length
+        if end + 4 > len(raw):
+            raise ValueError("图片转换器生成的 PNG 数据不完整")
+        chunk = raw[start:end]
+        if kind == b"IHDR":
+            width, height, depth, color_type, _, _, interlace = struct.unpack(
+                ">IIBBBBB", chunk)
+        elif kind == b"IDAT":
+            compressed.extend(chunk)
+        elif kind == b"IEND":
+            break
+        offset = end + 4
+
+    # LibreOffice emits 8-bit RGB/RGBA PNGs. Leave other valid PNG variants to
+    # the client renderer rather than rejecting a format this check cannot decode.
+    if not width or not height or depth != 8 or color_type not in {2, 6} or interlace:
+        return False
+    channels = 3 if color_type == 2 else 4
+    stride = width * channels
+    try:
+        pixels = zlib.decompress(compressed)
+    except zlib.error as exc:
+        raise ValueError("图片转换器生成的 PNG 像素数据无法解码") from exc
+    if len(pixels) != height * (stride + 1):
+        raise ValueError("图片转换器生成的 PNG 像素尺寸与头部不一致")
+
+    previous = bytearray(stride)
+    first_color = None
+    varied = False
+    visible = False
+    cursor = 0
+    for _ in range(height):
+        filter_type = pixels[cursor]
+        cursor += 1
+        scanline = bytearray(pixels[cursor:cursor + stride])
+        cursor += stride
+        for index in range(stride):
+            left = scanline[index - channels] if index >= channels else 0
+            above = previous[index]
+            upper_left = previous[index - channels] if index >= channels else 0
+            if filter_type == 1:
+                scanline[index] = (scanline[index] + left) & 0xff
+            elif filter_type == 2:
+                scanline[index] = (scanline[index] + above) & 0xff
+            elif filter_type == 3:
+                scanline[index] = (scanline[index] + ((left + above) >> 1)) & 0xff
+            elif filter_type == 4:
+                estimate = left + above - upper_left
+                distances = (abs(estimate - left), abs(estimate - above),
+                             abs(estimate - upper_left))
+                predictor = (left if distances[0] <= distances[1] and distances[0] <= distances[2]
+                             else above if distances[1] <= distances[2] else upper_left)
+                scanline[index] = (scanline[index] + predictor) & 0xff
+            elif filter_type != 0:
+                raise ValueError(f"PNG 使用了不支持的行过滤器: {filter_type}")
+
+        for index in range(0, stride, channels):
+            color = bytes(scanline[index:index + channels])
+            if first_color is None:
+                first_color = color
+            elif color != first_color:
+                varied = True
+            if channels == 3 or color[3] != 0:
+                visible = True
+        previous = scanline
+        if varied and visible:
+            return False
+    return not varied or not visible
+
+
+def _trim_png_canvas(path: Path) -> bool:
+    """Crop oversized uniform margins from non-interlaced 8-bit RGB/RGBA PNGs."""
+    raw = Path(path).read_bytes()
+    if not raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise ValueError("图片转换器生成的文件不是有效 PNG")
+    compressed = bytearray()
+    width = height = depth = color_type = interlace = 0
+    offset = 8
+    while offset + 12 <= len(raw):
+        length = struct.unpack_from(">I", raw, offset)[0]
+        kind = raw[offset + 4:offset + 8]
+        start, end = offset + 8, offset + 8 + length
+        if end + 4 > len(raw):
+            raise ValueError("图片转换器生成的 PNG 数据不完整")
+        data = raw[start:end]
+        if kind == b"IHDR":
+            width, height, depth, color_type, comp, filt, interlace = struct.unpack(">IIBBBBB", data)
+        elif kind == b"IDAT":
+            compressed.extend(data)
+        elif kind == b"IEND":
+            break
+        offset = end + 4
+    if not width or not height or depth != 8 or color_type not in {2, 6} or interlace:
+        return False
+    channels = 3 if color_type == 2 else 4
+    stride = width * channels
+    try:
+        pixels = zlib.decompress(compressed)
+    except zlib.error as exc:
+        raise ValueError("图片转换器生成的 PNG 像素数据无法解码") from exc
+    if len(pixels) != height * (stride + 1):
+        raise ValueError("图片转换器生成的 PNG 像素尺寸与头部不一致")
+
+    # Decode PNG row filters to raw pixel rows.
+    rows = []
+    previous = bytearray(stride)
+    cursor = 0
+    for _ in range(height):
+        filter_type = pixels[cursor]
+        cursor += 1
+        row = bytearray(pixels[cursor:cursor + stride])
+        cursor += stride
+        for index in range(stride):
+            left = row[index - channels] if index >= channels else 0
+            above = previous[index]
+            upper_left = previous[index - channels] if index >= channels else 0
+            if filter_type == 1:
+                row[index] = (row[index] + left) & 255
+            elif filter_type == 2:
+                row[index] = (row[index] + above) & 255
+            elif filter_type == 3:
+                row[index] = (row[index] + ((left + above) >> 1)) & 255
+            elif filter_type == 4:
+                estimate = left + above - upper_left
+                distances = (abs(estimate - left), abs(estimate - above), abs(estimate - upper_left))
+                predictor = (left if distances[0] <= distances[1] and distances[0] <= distances[2]
+                             else above if distances[1] <= distances[2] else upper_left)
+                row[index] = (row[index] + predictor) & 255
+            elif filter_type != 0:
+                raise ValueError(f"PNG 使用了不支持的行过滤器: {filter_type}")
+        rows.append(row)
+        previous = row
+
+    # Pick the canvas background from sampled edge pixels; this handles white,
+    # transparent, and other solid margins without assuming a white page.
+    from collections import Counter
+    sample_step = max(1, max(width, height) // 500)
+    edge_colors = []
+    x_samples = range(0, width, sample_step)
+    y_samples = range(0, height, sample_step)
+    for x in x_samples:
+        edge_colors.extend((bytes(rows[0][x * channels:(x + 1) * channels]),
+                            bytes(rows[-1][x * channels:(x + 1) * channels])))
+    for y in y_samples:
+        edge_colors.extend((bytes(rows[y][:channels]),
+                            bytes(rows[y][-channels:])))
+    background = Counter(edge_colors).most_common(1)[0][0]
+
+    min_x, min_y, max_x, max_y = width, height, -1, -1
+    for y, row in enumerate(rows):
+        for x in range(width):
+            color = row[x * channels:(x + 1) * channels]
+            if channels == 4 and color[3] <= 8:
+                continue
+            if channels == 4 and background[3] <= 8:
+                content = color[3] > 8
+            else:
+                content = any(abs(color[c] - background[c]) > 12 for c in range(3))
+            if content:
+                min_x, min_y = min(min_x, x), min(min_y, y)
+                max_x, max_y = max(max_x, x), max(max_y, y)
+    if max_x < min_x or max_y < min_y:
+        return False
+    # Avoid touching normal images; trim only clear oversized canvas margins.
+    if (max_x - min_x + 1) * (max_y - min_y + 1) >= width * height * 0.98:
+        return False
+    pad = max(2, min(width, height) // 100)
+    x0, y0 = max(0, min_x - pad), max(0, min_y - pad)
+    x1, y1 = min(width, max_x + pad + 1), min(height, max_y + pad + 1)
+    cropped_rows = [bytes([0]) + bytes(row[x0 * channels:x1 * channels])
+                    for row in rows[y0:y1]]
+    ihdr = struct.pack(">IIBBBBB", x1 - x0, y1 - y0, depth, color_type, 0, 0, 0)
+
+    def png_chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff)
+
+    output = bytearray(b"\x89PNG\r\n\x1a\n")
+    output.extend(png_chunk(b"IHDR", ihdr))
+    output.extend(png_chunk(b"IDAT", zlib.compress(b"".join(cropped_rows))))
+    output.extend(png_chunk(b"IEND", b""))
+    Path(path).write_bytes(output)
+    return True
+
+
+def _render_emfplus_bitmap(source: Path, target: Path) -> bool:
+    """Extract a supported raw 32-bit bitmap stored in an EMF+ Image object."""
+    data = Path(source).read_bytes()
+    offset = 0
+    while offset + 8 <= len(data):
+        record_type, record_size = struct.unpack_from("<II", data, offset)
+        if record_size < 8 or offset + record_size > len(data):
+            return False
+        if record_type == 14:  # EMR_EOF
+            break
+        if record_type == 70 and record_size >= 16:  # EMR_COMMENT
+            comment_size = struct.unpack_from("<I", data, offset + 8)[0]
+            comment_end = offset + 12 + comment_size
+            if comment_end > offset + record_size:
+                return False
+            if data[offset + 12:offset + 16] == b"EMF+":
+                cursor = offset + 16
+                while cursor + 12 <= comment_end:
+                    plus_type, flags = struct.unpack_from("<HH", data, cursor)
+                    plus_size, plus_data_size = struct.unpack_from("<II", data, cursor + 4)
+                    if (plus_size < 12 or cursor + plus_size > comment_end
+                            or plus_data_size > plus_size - 12):
+                        return False
+                    object_type = (flags >> 8) & 0x7f
+                    continuing = bool(flags & 0x8000)
+                    if plus_type == 0x4008 and object_type == 5 and not continuing:
+                        object_start = cursor + 12
+                        if plus_data_size < 28:
+                            return False
+                        (_version, image_type, width, height, signed_stride,
+                         pixel_format, bitmap_data_type) = struct.unpack_from(
+                             "<IIiiiII", data, object_start)
+                        if image_type == 1 and bitmap_data_type == 0:
+                            if pixel_format not in {0x000e200b, 0x0026200a, 0x00022009}:
+                                cursor += plus_size
+                                continue
+                            if (width <= 0 or height <= 0 or width > 30000 or height > 30000
+                                    or width * height > 100_000_000 or not signed_stride):
+                                return False
+                            stride = abs(signed_stride)
+                            bytes_per_pixel = 4
+                            if stride < width * bytes_per_pixel:
+                                return False
+                            pixel_start = object_start + 28
+                            pixel_size = stride * height
+                            if pixel_size != plus_data_size - 28:
+                                return False
+                            pixels = data[pixel_start:pixel_start + pixel_size]
+                            rows = [pixels[y * stride:(y + 1) * stride]
+                                    for y in range(height)]
+                            if signed_stride < 0:
+                                rows.reverse()
+
+                            png_rows = []
+                            premultiplied = pixel_format == 0x000e200b
+                            has_alpha = pixel_format != 0x00022009
+                            for row in rows:
+                                rgb = bytearray()
+                                for x in range(0, width * bytes_per_pixel, bytes_per_pixel):
+                                    blue, green, red, alpha = row[x:x + 4]
+                                    if not has_alpha:
+                                        rgb.extend((red, green, blue))
+                                    elif premultiplied:
+                                        background = 255 - alpha
+                                        rgb.extend((min(255, red + background),
+                                                    min(255, green + background),
+                                                    min(255, blue + background)))
+                                    else:
+                                        inverse = 255 - alpha
+                                        rgb.extend(((red * alpha + 255 * inverse + 127) // 255,
+                                                    (green * alpha + 255 * inverse + 127) // 255,
+                                                    (blue * alpha + 255 * inverse + 127) // 255))
+                                png_rows.append(b"\x00" + rgb)
+
+                            def chunk(kind: bytes, payload: bytes) -> bytes:
+                                return (struct.pack(">I", len(payload)) + kind + payload
+                                        + struct.pack(">I", zlib.crc32(kind + payload) & 0xffffffff))
+
+                            png = bytearray(b"\x89PNG\r\n\x1a\n")
+                            png.extend(chunk(b"IHDR", struct.pack(">IIBBBBB", width, height,
+                                                                       8, 2, 0, 0, 0)))
+                            png.extend(chunk(b"IDAT", zlib.compress(b"".join(png_rows))))
+                            png.extend(chunk(b"IEND", b""))
+                            Path(target).write_bytes(png)
+                            return True
+                    cursor += plus_size
+        offset += record_size
+    return False
+
+
 def render_image_for_mcp(source: Path, output_dir: Path) -> Path:
     """Convert Word image formats that MCP clients may not render into task-local PNG."""
     source, output_dir = Path(source).resolve(), Path(output_dir).resolve()
     image_format = source.suffix.lower().lstrip(".")
     if image_format not in MCP_CONVERT_IMAGE_FORMATS:
         raise ValueError(f"不支持转换为 MCP 图片的格式: {source.suffix or '(无扩展名)'}")
-    converter = _find_soffice()
-    if not converter:
-        raise ValueError(f"图片 {source.name} 是 {source.suffix.lower()} 格式；当前环境未安装 LibreOffice，无法转换为 MCP 可读 PNG")
     output_dir.mkdir(parents=True, exist_ok=True)
     target = output_dir / f"{source.stem}.png"
     if target.is_file() and target.stat().st_size:
+        if _png_is_blank(target):
+            target.unlink()
+            raise ValueError(
+                f"图片 {source.name} 的缓存 PNG 为空白；已清除缓存，原图未修改，"
+                "请将该图片标记为未识别并保留待确认，不要据此复原流程"
+            )
         return target
+    if image_format == "emf":
+        with tempfile.TemporaryDirectory(prefix="emfplus-render-", dir=output_dir) as temp_name:
+            candidate = Path(temp_name) / target.name
+            if _render_emfplus_bitmap(source, candidate) and not _png_is_blank(candidate):
+                os.replace(candidate, target)
+                return target
+    converter = _find_soffice()
+    if not converter:
+        raise ValueError(f"图片 {source.name} 是 {source.suffix.lower()} 格式；当前环境未安装 LibreOffice，无法转换为 MCP 可读 PNG")
     with tempfile.TemporaryDirectory(prefix="vector-render-", dir=output_dir) as temp_name:
         temp_dir = Path(temp_name)
         profile = (temp_dir / "profile").resolve()
@@ -185,8 +496,60 @@ def render_image_for_mcp(source: Path, output_dir: Path) -> Path:
         if result.returncode != 0 or not rendered.is_file() or not rendered.stat().st_size:
             detail = (result.stderr or result.stdout or "未生成 PNG")[-800:]
             raise ValueError(f"图片 {source.name} 转换为 PNG 失败: {detail}")
+        _trim_png_canvas(rendered)
+        if _png_is_blank(rendered):
+            rendered.unlink()
+            failures = []
+            recovered = None
+            try:
+                candidate = _render_via_pdf(source, temp_dir, converter)
+                _trim_png_canvas(candidate)
+                if not _png_is_blank(candidate):
+                    recovered = candidate
+                else:
+                    failures.append("PDF 栅格化输出为空白")
+            except ValueError as exc:
+                failures.append(str(exc))
+            if recovered is None:
+                raise ValueError(
+                    f"图片 {source.name} 直接转换裁边后仍为空白，PDF 回退失败（{'；'.join(failures)}）；"
+                    "原图未修改，已拒绝作为成功图像返回。请将该图片标记为未识别并保留待确认"
+                )
+            rendered = recovered
         os.replace(rendered, target)
     return target
+
+
+def _render_via_pdf(source: Path, temp_dir: Path, converter: str) -> Path:
+    """Use LibreOffice PDF export plus Poppler when direct vector PNG export is blank."""
+    rasterizer = _find_pdftoppm()
+    if not rasterizer:
+        raise ValueError(
+            f"图片 {source.name} 直接 PNG 转换为空白，且未找到 pdftoppm PDF 栅格化器"
+        )
+    pdf_dir = temp_dir / "pdf"
+    pdf_dir.mkdir()
+    profile = (temp_dir / "pdf-profile").resolve()
+    profile.mkdir()
+    result = subprocess.run(
+        [converter, "--headless", f"-env:UserInstallation={profile.as_uri()}",
+         "--convert-to", "pdf", "--outdir", str(pdf_dir), str(source)],
+        capture_output=True, text=True, timeout=60,
+        env=_soffice_environment(converter))
+    pdf = pdf_dir / f"{source.stem}.pdf"
+    if result.returncode != 0 or not pdf.is_file() or not pdf.stat().st_size:
+        detail = (result.stderr or result.stdout or "未生成 PDF")[-600:]
+        raise ValueError(f"图片 {source.name} 备用 PDF 转换失败: {detail}")
+    prefix = temp_dir / "pdf-image"
+    raster = subprocess.run(
+        [rasterizer, "-f", "1", "-l", "1", "-r", "150", "-singlefile",
+         "-png", str(pdf), str(prefix)],
+        capture_output=True, text=True, timeout=60)
+    png = prefix.with_suffix(".png")
+    if raster.returncode != 0 or not png.is_file() or not png.stat().st_size:
+        detail = (raster.stderr or raster.stdout or "未生成 PNG")[-600:]
+        raise ValueError(f"图片 {source.name} PDF 栅格化失败: {detail}")
+    return png
 
 
 def _xml(zf: zipfile.ZipFile, name: str) -> ET.Element:

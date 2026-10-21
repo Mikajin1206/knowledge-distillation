@@ -11,6 +11,7 @@ from pathlib import Path
 from tests._path import *  # noqa: F401,F403
 from ckp.distill import Distill
 from ckp.md_render import export_draft, split_frontmatter, verify_md
+from ckp.quality import score_quality
 from ckp.store import Store
 
 
@@ -45,6 +46,30 @@ BODY = """# 样例知识
 
 无冲突；缺口见任务记录。
 """
+
+
+class ScoreQualityTest(unittest.TestCase):
+    def test_missing_client_dimensions_are_explicitly_partial(self):
+        policy = {
+            "version": "test-score-v1", "hash": "test-hash",
+            "dimensions": [
+                {"key": "core_coverage", "label": "覆盖", "weight": 25, "owner": "client"},
+                {"key": "source_traceability", "label": "来源", "weight": 25, "owner": "server"},
+                {"key": "factual_fidelity", "label": "忠实", "weight": 20, "owner": "client"},
+                {"key": "structure_and_retrieval", "label": "结构", "weight": 15, "owner": "server"},
+                {"key": "media_handling", "label": "图片", "weight": 10, "owner": "client"},
+                {"key": "table_handling", "label": "表格", "weight": 5, "owner": "client"},
+            ],
+            "bands": [{"minimum": 0, "label": "待提升"}],
+        }
+        result = score_quality(
+            policy, {"scores": {"core_coverage": 4}}, source_score=5,
+            source_note="来源已核验", section_score=5, section_note="结构已核验",
+            asset_count=1, table_count=1)
+        self.assertEqual("partial", result["assessment_status"])
+        self.assertEqual(["factual_fidelity", "media_handling", "table_handling"],
+                         result["unassessed_dimensions"])
+        self.assertIn("客户端评分维度未评", " ".join(result["flags"]))
 
 SOURCES = [{"file_id": None, "version_id": "", "location": "全文", "supports": "示例"}]
 
@@ -206,7 +231,7 @@ class DistillTest(unittest.TestCase):
                       {"from": "approve", "to": "end", "direction": "approve→end",
                        "relationship": "sequence", "condition": "通过", "action": "完成",
                        "verified_against_original": True}],
-            "unresolved_items": [],
+            "unresolved_items": ["泳道归属无法从来源图中确认，需人工复核"],
         }
         quality_report = {"asset_reviews": [], "flowcharts": [flowchart],
                           "table_checks": [], "evidence": {"reading_coverage": "complete"}}
@@ -234,6 +259,9 @@ class DistillTest(unittest.TestCase):
         self.assertEqual("quality_report.flowcharts[0]", protected["payload_ref"])
         self.assertEqual(self.file_id, protected["source"]["source_file_id"])
         self.assertEqual(self.version_id, protected["source"]["source_version_id"])
+        self.assertEqual(source_sha, protected["source"]["source_sha256"])
+        self.assertEqual(flowchart["unresolved_items"],
+                         sidecar["quality_report"]["flowcharts"][0]["unresolved_items"])
         rag_section = next(section for section in sidecar["rag_selection"]["sections"]
                            if section["id"] == "visual_assets")
         document_ref = {"knowledge_id": draft["knowledge_id"], "revision": "1",
@@ -255,6 +283,7 @@ class DistillTest(unittest.TestCase):
                               "quality_score_version", "topics", "industry"):
             self.assertNotIn(process_field, frontmatter)
         self.assertEqual(1, len(sidecar["sources"]))
+        self.assertEqual(source_sha, sidecar["sources"][0]["sha256"])
         self.assertEqual("赵六", sidecar["human_inputs"][0]["provider"])
         self.assertEqual("缺少验收报告", sidecar["gaps"][0]["description"])
         revised = self._submit(task["task_id"], "调研结论样例", "方案设计",

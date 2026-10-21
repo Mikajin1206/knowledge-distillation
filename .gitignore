@@ -1,7 +1,8 @@
 # Local originals, databases, generated knowledge, and temporary material
-/data/
-/output/
-/tmp/
+/data
+/output
+/tmp/*
+!/tmp/.gitkeep
 
 # Python environments and generated files
 /.venv/

@@ -75,7 +75,7 @@ class CliEndToEnd(unittest.TestCase):
         self._run("distill", "gap", task_id, "验收材料未上传")
         self._run("distill", "input", task_id, "--provider", "赵六", "补充：旧系统将于年底停用")
         guidance = json.loads(self._run("distill", "guidance", task_id))
-        self.assertEqual("distill-rules-v0.10", guidance["rules_version"])
+        self.assertEqual("distill-rules-v0.11", guidance["rules_version"])
         self.assertIn("通用蒸馏规范.md", guidance["rules_files"])
         material = json.loads(self._run("distill", "material", task_id, "--file", file_id))
         self.assertTrue(Path(material["path"]).exists())

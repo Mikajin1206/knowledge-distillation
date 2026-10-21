@@ -575,7 +575,7 @@ class C01C02RulesContent(unittest.TestCase):
     def test_rules_v03_contains_discipline(self):
         root = Path(__file__).resolve().parents[1]
         text = (root / "templates" / "蒸馏规范" / "通用蒸馏规范.md").read_text(encoding="utf-8")
-        self.assertIn("distill-rules-v0.10", text)
+        self.assertIn("distill-rules-v0.11", text)
         self.assertIn("未见证据", text)
         self.assertIn("不得写\"均未签署\"", text)
         self.assertIn("逐行清点", text)          # R02
@@ -587,7 +587,7 @@ class C01C02RulesContent(unittest.TestCase):
         checklist = (root / "templates" / "蒸馏规范" / "质量检查单.md").read_text(encoding="utf-8")
         self.assertIn("三态", checklist)
         manifest = json.loads((root / "templates" / "蒸馏规范" / "rules.json").read_text(encoding="utf-8"))
-        self.assertEqual("distill-rules-v0.10", manifest["version"])
+        self.assertEqual("distill-rules-v0.11", manifest["version"])
 
 
 if __name__ == "__main__":

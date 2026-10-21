@@ -162,7 +162,7 @@ class McpServerEndToEnd(unittest.TestCase):
         task_id = task["task_id"]
         self._call("distill_attach", {"task_id": task_id, "file_id": file_id})
         guidance = self._call("distill_guidance", {"task_id": task_id})
-        self.assertEqual("distill-rules-v0.10", guidance["rules_version"])
+        self.assertEqual("distill-rules-v0.11", guidance["rules_version"])
         self.assertEqual("distill-score-v2", guidance["score_policy"]["version"])
         material = self._call("distill_material", {"task_id": task_id, "file_id": file_id})
         self.assertTrue(material["verified"])

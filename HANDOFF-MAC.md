@@ -30,7 +30,7 @@
 ```bash
 python3 deploy/import_git.py \
   --repo '/Users/moc/Claude/Company Brian/knowledge-distillation' \
-  --destination '/Users/moc/Claude/Company Brian/knowledge-distillation/cloud-rag-integration'
+  --destination '/Users/moc/Claude/Company Brian/knowledge-distillation'
 ```
 
 等价的关键 Git 操作如下（不要与上面的自动脚本重复执行）：
@@ -39,10 +39,10 @@ python3 deploy/import_git.py \
 # 在解压包目录，先确认父仓库已通过 .git/info/exclude 忽略 cloud-rag-integration/。
 git -C '/Users/moc/Claude/Company Brian/knowledge-distillation' check-ignore cloud-rag-integration/
 git clone --branch cloud/rag-integration handoff/cloud-rag-integration.bundle \
-  '/Users/moc/Claude/Company Brian/knowledge-distillation/cloud-rag-integration'
-git -C '/Users/moc/Claude/Company Brian/knowledge-distillation/cloud-rag-integration' switch -c local/mac-deepseek-qwen
+  '/Users/moc/Claude/Company Brian/knowledge-distillation'
+git -C '/Users/moc/Claude/Company Brian/knowledge-distillation' switch -c local/mac-deepseek-qwen
 # 这里的补丁参数必须是解压包内补丁的绝对路径；不要改父仓库 tracked .gitignore。
-git -C '/Users/moc/Claude/Company Brian/knowledge-distillation/cloud-rag-integration' apply --index /absolute/path/to/unpacked/handoff/mac-local.patch
+git -C '/Users/moc/Claude/Company Brian/knowledge-distillation' apply --index /absolute/path/to/unpacked/handoff/mac-local.patch
 ```
 
 父仓库使用已设置的本地 `.git/info/exclude`，不修改其 tracked .gitignore。导出包自身也排除
@@ -53,9 +53,9 @@ git -C '/Users/moc/Claude/Company Brian/knowledge-distillation/cloud-rag-integra
 ```bash
 git -C '/Users/moc/Claude/Company Brian/knowledge-distillation' rev-parse HEAD
 git -C '/Users/moc/Claude/Company Brian/knowledge-distillation' status --short
-git -C '/Users/moc/Claude/Company Brian/knowledge-distillation/cloud-rag-integration' show-ref refs/heads/cloud/rag-integration
-git -C '/Users/moc/Claude/Company Brian/knowledge-distillation/cloud-rag-integration' rev-parse HEAD
-git -C '/Users/moc/Claude/Company Brian/knowledge-distillation/cloud-rag-integration' diff --cached --stat
+git -C '/Users/moc/Claude/Company Brian/knowledge-distillation' show-ref refs/heads/cloud/rag-integration
+git -C '/Users/moc/Claude/Company Brian/knowledge-distillation' rev-parse HEAD
+git -C '/Users/moc/Claude/Company Brian/knowledge-distillation' diff --cached --stat
 ```
 
 原仓库 HEAD 及 31 项变更应保持原样；独立克隆 HEAD 应为真实 afcffff，本地适配补丁已暂存。
@@ -63,7 +63,7 @@ git -C '/Users/moc/Claude/Company Brian/knowledge-distillation/cloud-rag-integra
 
 ## 2. Python 与模型配置
 
-后续命令在独立克隆 `/Users/moc/Claude/Company Brian/knowledge-distillation/cloud-rag-integration` 执行。
+后续命令在独立克隆 `/Users/moc/Claude/Company Brian/knowledge-distillation` 执行。
 推荐 Python 3.12。`requirements-macos.lock.txt` 来自云端验证的版本固定，去掉不再需要的本机 BGE 运行依赖，
 保留 tokenizer 边界测试依赖；**这不是已在 Mac 验证过的锁文件**，需本地解析相应 macOS wheel、pip check 和测试。
 原 Linux 全量锁 `requirements-cloud.lock.txt` 同时保留作证据，不能用 Linux wheel 强装 Mac。

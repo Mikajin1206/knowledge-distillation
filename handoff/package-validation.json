@@ -1,0 +1,10 @@
+{
+  "upstream_afcffff_tests": {"count":99,"passed":true,"platform":"Linux x86_64, Python 3.12"},
+  "mac_adapted_export_tests": {"count":99,"passed":true,"platform":"Linux x86_64, Python 3.12, reused existing cloud dependencies; not a Mac execution"},
+  "portable_compose_parse_only":true,
+  "authentic_bundle_verify":true,
+  "nested_clone_overlay_simulation":{"passed":true,"parent_head":"97ec6fe","parent_dirty_items_preserved":31,"path_contains_spaces":true},
+  "cloud_code_and_running_services_changed":false,
+  "mac_execution_verified":false,
+  "real_deepseek_qwen_verified":false
+}

@@ -1,0 +1,38 @@
+ .env.example                                     |  15 +
+ .gitignore                                       |   6 +
+ CLOUD-README.md                                  | 147 +++++++++
+ ai-generate-solution-mcp.sh                      |   6 +
+ ai-generate-solution.mcp.example.json            |   9 +
+ cloud.mcp.example.json                           |  15 +
+ dev-services.sh                                  |  39 +++
+ rag-mcp.sh                                       |   5 +
+ rag.sh                                           |   5 +
+ requirements-cloud.lock.txt                      |  90 ++++++
+ requirements-cloud.txt                           |  22 ++
+ src/ai_generate_solution/__init__.py             |   0
+ src/ai_generate_solution/agent.py                | 119 ++++++++
+ src/ai_generate_solution/api.py                  | 100 ++++++
+ src/ai_generate_solution/knowledge_tools.py      |  40 +++
+ src/ai_generate_solution/main.py                 |  39 +++
+ src/ai_generate_solution/mcp_http.py             |  98 ++++++
+ src/ai_generate_solution/promps/system_prompt.md |  22 ++
+ src/chunks_and_in_vector/__init__.py             |   0
+ src/chunks_and_in_vector/config.py               | 124 ++++++++
+ src/chunks_and_in_vector/embedding.py            | 124 ++++++++
+ src/chunks_and_in_vector/file_uploader.py        | 108 +++++++
+ src/chunks_and_in_vector/local_embedding.py      |  48 +++
+ src/chunks_and_in_vector/main.py                 |  29 ++
+ src/chunks_and_in_vector/mcp_server.py           |  30 ++
+ src/chunks_and_in_vector/milvus_db.py            | 368 +++++++++++++++++++++++
+ src/chunks_and_in_vector/mongodb_db.py           | 179 +++++++++++
+ src/chunks_and_in_vector/pipeline.py             | 311 +++++++++++++++++++
+ src/chunks_and_in_vector/settings.py             |  90 ++++++
+ tests/test_cloud_models.py                       |  61 ++++
+ tests/test_rag_pipeline.py                       |  86 ++++++
+ tests/test_rag_storage.py                        |  42 +++
+ validation/cloud_e2e.py                          | 156 ++++++++++
+ validation/delivery_samples.py                   |  32 ++
+ validation/http_check.py                         |  27 ++
+ validation/install_local_model.py                |  24 ++
+ validation/model_preflight.py                    |  22 ++
+ 37 files changed, 2638 insertions(+)

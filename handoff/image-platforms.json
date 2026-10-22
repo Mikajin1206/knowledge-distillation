@@ -1,0 +1,12 @@
+{
+ "verified_on":"2026-10-22",
+ "method":"docker manifest inspect (registry indexes)",
+ "images":{
+   "mongo:4.0.28":["linux/amd64","linux/arm64/v8"],
+   "milvusdb/milvus:v2.6.24":["linux/amd64","linux/arm64"],
+   "quay.io/coreos/etcd:v3.5.25":["linux/amd64","linux/arm64","linux/ppc64le","linux/s390x"],
+   "milvusdb/minio:RELEASE.2024-12-18T13-15-44Z":["linux/amd64","linux/arm64","linux/ppc64le"]
+ },
+ "apple_silicon_execution_verified":false,
+ "note":"Native ARM64 images exist; Docker Desktop selects the native variant. Registry evidence is not Mac execution evidence."
+}

@@ -42,17 +42,23 @@ def _load_system_prompt() -> str:
 
 # ---------- LLM / Agent ----------
 def _load_llm() -> ChatOpenAI:
-    provider = os.getenv("LLM_PROVIDER", "codex-client").strip()
+    provider = os.getenv("LLM_PROVIDER", "api").strip()
     if provider == "codex-client":
         raise RuntimeError("测试生成模型使用 Codex 的 GPT-6 luna / medium；请通过 Codex 客户端和 MCP 验证。当前未配置应用模型 API，自动方案生成停用。")
     if provider != "api":
         raise ValueError("LLM_PROVIDER 必须为 codex-client 或 api")
     api_key = os.getenv("LLM_API_KEY", "").strip()
-    base_url = os.getenv("LLM_BASE_URL", "").strip()
-    model = os.getenv("LLM_MODEL_NAME", "gpt-6-luna").strip()
+    base_url = os.getenv("LLM_BASE_URL", "https://api.deepseek.com").strip()
+    model = os.getenv("LLM_MODEL_NAME", "deepseek-v4-flash").strip()
     if not api_key or not base_url:
         raise RuntimeError("应用 API 需要 LLM_API_KEY 与 LLM_BASE_URL；不会复用原 DeepSeek 凭据")
-    return ChatOpenAI(model=model, api_key=api_key, base_url=base_url, reasoning_effort=os.getenv("LLM_REASONING_EFFORT", "medium"))
+    options = {"model": model, "api_key": api_key, "base_url": base_url}
+    effort = os.getenv("LLM_REASONING_EFFORT", "").strip()
+    if effort:
+        options["reasoning_effort"] = effort
+    else:
+        options["temperature"] = 0
+    return ChatOpenAI(**options)
 
 
 @lru_cache(maxsize=1)

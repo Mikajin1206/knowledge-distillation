@@ -1,3 +1,5 @@
+> Mac 本地交接入口：[HANDOFF-MAC.md](HANDOFF-MAC.md)。此导出包包含独立本地适配；云端原提交保留在 bundle 中。
+
 # Knowledge Distillation
 
 [简体中文](README.zh-CN.md) · [English](README.md)

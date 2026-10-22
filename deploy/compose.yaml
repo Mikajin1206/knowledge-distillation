@@ -1,0 +1,74 @@
+services:
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.25
+    restart: unless-stopped
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+      ETCD_SNAPSHOT_COUNT: "50000"
+    volumes:
+      - ../.local/volumes/etcd:/etcd
+    command: etcd -advertise-client-urls=http://etcd:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    healthcheck:
+      test: [CMD, etcdctl, endpoint, health]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+  minio:
+    image: ${KD_MINIO_IMAGE:-milvusdb/minio:RELEASE.2024-12-18T13-15-44Z@sha256:1dce27c494a16bae114774f1cec295493f3613142713130c2d22dd5696be6ad3}
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${KD_MINIO_USER:?Run deploy/import_local_env.py first}
+      MINIO_ROOT_PASSWORD: ${KD_MINIO_PASSWORD:?Run deploy/import_local_env.py first}
+    volumes:
+      - ../.local/volumes/minio:/minio_data
+    command: minio server /minio_data --console-address :9001
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    healthcheck:
+      test: [CMD, curl, -f, http://localhost:9000/minio/health/live]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+  standalone:
+    image: milvusdb/milvus:v2.6.24
+    restart: unless-stopped
+    command: [milvus, run, standalone]
+    security_opt: [seccomp:unconfined]
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+      MINIO_ACCESS_KEY_ID: ${KD_MINIO_USER:?Run deploy/import_local_env.py first}
+      MINIO_SECRET_ACCESS_KEY: ${KD_MINIO_PASSWORD:?Run deploy/import_local_env.py first}
+      MQ_TYPE: woodpecker
+      NO_PROXY: localhost,127.0.0.1,etcd,minio,standalone,mongodb,172.16.0.0/12,192.168.0.0/16,10.0.0.0/8
+      no_proxy: localhost,127.0.0.1,etcd,minio,standalone,mongodb,172.16.0.0/12,192.168.0.0/16,10.0.0.0/8
+    volumes:
+      - ../.local/volumes/milvus:/var/lib/milvus
+    ports:
+      - "127.0.0.1:19530:19530"
+      - "127.0.0.1:9091:9091"
+    depends_on:
+      etcd: {condition: service_healthy}
+      minio: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, curl, -f, http://localhost:9091/healthz]
+      interval: 15s
+      start_period: 90s
+      timeout: 10s
+      retries: 10
+  mongodb:
+    image: mongo:4.0.28
+    restart: unless-stopped
+    volumes:
+      - ../.local/volumes/mongodb:/data/db
+      - ../.local/volumes/mongodb-config:/data/configdb
+    ports:
+      - "127.0.0.1:27017:27017"
+    healthcheck:
+      test: [CMD, mongo, --quiet, --eval, "quit(db.adminCommand({ping:1}).ok ? 0 : 1)"]
+      interval: 15s
+      timeout: 10s
+      retries: 10

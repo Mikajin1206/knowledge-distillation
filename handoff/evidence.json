@@ -1,0 +1,12 @@
+{
+ "cloud_commit":"afcfffff56c8a69dc9b4a3bef40250eab2d026be",
+ "distillation_base":"97ec6feea37b853e0259ece1b1e67e80b3d4b992",
+ "original_cloud_tests":99,
+ "latest_ckp_python_files_unchanged":11,
+ "real_databases_tested":{"MongoDB":"4.0.28","Milvus":"2.6.24"},
+ "mcp_tools":{"latest_distillation":21,"sandbox_rag":1},
+ "database_e2e_embedding":"deterministic fixture, NOT semantic quality evidence",
+ "supplied_export_samples":{"passed":7,"rejected_old_routes":2,"customer_data_in_package":false},
+ "tested_paths":["Word upload/read and synthetic draft export/hash","body-only routing and source-version metadata","MongoDB/Milvus ingest, search, read","idempotency","partial vector-write failure and retry","revision switching and historical read","concurrent same-knowledge lease rejection","knowledge-type switching","withdrawal","local HTTP health and RAG search/read"],
+ "not_verified":["real DeepSeek or Qwen authentication/model availability","real semantic retrieval quality","company file server","human multimodal Word distillation","Mac/Apple Silicon startup","production approval/authorization"]
+}

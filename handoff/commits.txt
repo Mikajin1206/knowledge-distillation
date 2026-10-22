@@ -1,0 +1,8 @@
+afcffff Integrate sandbox RAG with latest distillation and local embedding support
+97ec6fe feat: improve Word distillation and diagram handoff
+103eddd Specify protected diagram file server flow
+8041c58 Defer retrieval integration until service exists
+99a9bb4 Clarify revision read requirements for RAG
+79d69a9 Link RAG sections to source revisions
+1143d39 Preserve protected diagram payloads in sidecars
+3f06b9e Require confirmed project names in upload guidance

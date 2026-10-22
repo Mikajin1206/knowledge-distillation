@@ -31,3 +31,7 @@ __pycache__/
 .cloud/
 reports/
 vendor-requirements.txt
+
+.local/
+
+cloud-rag-integration/

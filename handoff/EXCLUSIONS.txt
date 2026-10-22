@@ -1,0 +1,16 @@
+Excluded from source snapshot and ZIP:
+.env and every private .env.* (only empty-key .env.example is included)
+.env.vendor and cloud/runtime model credentials
+customer Word/PDF/Excel/PowerPoint, customer exported MD/JSON and original docs samples
+runtime data/, output/, volumes/, .cloud/, .local/, tmp/
+MongoDB/SQLite/etcd/MinIO/Milvus data, database dumps and volumes
+.venv/, node_modules/, __pycache__/, *.pyc, pip/model caches and downloaded model weights
+.git/ directory, local config, worktree metadata, remotes, credential helpers, auth stores
+unrelated Git refs/objects, untracked local material, process logs with customer content
+
+Explicit inclusions:
+Only tracked afcffff project snapshot; latest CKP source/templates/specifications/tests
+Single cloud/rag-integration reachable Git history (15 commits), audited separately
+Empty-key .env.example; generated local secrets are created ONLY on the Mac
+Synthetic 99-test record and aggregate verification evidence, no customer test samples
+Local deployment overlay and native ARM64 image manifest summary

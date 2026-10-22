@@ -6,10 +6,14 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT/'src'))
 from chunks_and_in_vector.pipeline import prepare, SandboxRAG
 
+import argparse
+parser=argparse.ArgumentParser(description='Validate only an explicitly selected export directory')
+parser.add_argument('source_directory')
+args=parser.parse_args()
 service = SandboxRAG(mode='fixture')
 results = []
 try:
-    for path in sorted(Path('/workspace/delivery/extracted/knowledge-distillation/docs').glob('*.md')):
+    for path in sorted(Path(args.source_directory).resolve().glob('*.md')):
         try:
             prepared = prepare(path)
         except ValueError as exc:

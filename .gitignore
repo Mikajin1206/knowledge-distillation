@@ -25,3 +25,9 @@ __pycache__/
 *.sqlite3
 *.sqlite-*
 *.sqlite3-*
+
+.env*
+!.env.example
+.cloud/
+reports/
+vendor-requirements.txt

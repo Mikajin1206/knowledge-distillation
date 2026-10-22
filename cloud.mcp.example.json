@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "knowledge-distillation": {
+      "command": "/workspace/knowledge-distillation-cloud/ckp-mcp.sh",
+      "env": {
+        "CKP_DATA": "/workspace/knowledge-distillation-cloud/.cloud/data",
+        "CKP_OUTPUT": "/workspace/knowledge-distillation-cloud/.cloud/output"
+      }
+    },
+    "knowledge-rag-development": {
+      "command": "/workspace/knowledge-distillation-cloud/rag-mcp.sh",
+      "env": {"KD_EMBEDDING_MODE": "fixture"}
+    }
+  }
+}

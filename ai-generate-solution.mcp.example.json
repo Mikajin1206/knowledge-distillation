@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "ai-generate-solution": {
+      "command": "/ABSOLUTE/PATH/TO/knowledge-distillation/ai-generate-solution-mcp.sh",
+      "args": [],
+      "env": {}
+    }
+  }
+}

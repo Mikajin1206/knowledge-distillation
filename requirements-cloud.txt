@@ -1,0 +1,22 @@
+-r requirements-mcp.txt
+pymilvus==2.6.11
+# MongoDB 4.0 needs this older supported driver line.
+pymongo==4.10.1
+python-dotenv==1.2.1
+openai==2.24.0
+langchain==1.2.10
+langchain-openai==1.1.10
+fastapi>=0.135.1,<1
+uvicorn>=0.41,<1
+pydantic-settings>=2.13,<3
+# Pin the developer's compatible agent graph versions; newer prebuilt imports
+# ExecutionInfo unavailable in langgraph 1.0.10.
+langchain-core==1.2.16
+langgraph==1.0.10
+langgraph-prebuilt==1.0.8
+langgraph-checkpoint==4.0.1
+langgraph-sdk==0.3.9
+langsmith==0.7.9
+
+# CPU ONNX backend for local Chinese embedding; weights installed separately.
+fastembed==0.9.0

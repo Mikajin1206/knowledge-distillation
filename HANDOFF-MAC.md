@@ -1,5 +1,7 @@
 # Mac 本地代码交接（2026-10-22）
 
+> **当前状态补记（2026-10-23）：**下文关于 21 工具、三路入口、99 项测试等内容保留为交接包制作时的历史记录。1.2.1 单一 `knowledge-distillation` MCP（30工具）主链验收通过；1.3.0 同一服务共31工具，WorkBuddy已通过 OA 产品/领域选择、revision审核发布与RAG正反筛选黑盒验收；rev3 65/65 verified，项目完整自动化套件138项通过。`local_development` 下的审核记录、异步发布、逐块读回及 `local_versioned_store` 图形 JSON 版本上传/读取已实现。公司 file server、remote auth、生产发布仍未实现；撤回与部分负向输入未做 WorkBuddy 黑盒验证。真实 Qwen 返回 1024 维；2026-10-22 WorkBuddy 已完成主 OA 单版本发布、查询和图形资产读取（65/65 verified、重复 publish 复用同 task）。
+
 此包包含真实 Git 历史 bundle、由该提交导出的代码快照、独立本地适配补丁、非机密配置和验证证据。
 **本次只制作交接包，没有修改云端工作树或运行服务。**
 当前本地方案使用现有仓库 `/Users/moc/Claude/Company Brian/knowledge-distillation`；
@@ -108,7 +110,7 @@ python3.12 -m venv .venv
 已对 Docker registry manifest 核实：
 MongoDB 4.0.28 提供 linux/arm64/v8；Milvus 2.6.24、etcd 3.5.25、配套 MinIO 提供 linux/arm64。
 详见 `handoff/image-platforms.json`。Docker Desktop 应优先选原生 ARM64，不必先强制 linux/amd64/Rosetta。
-这只证明镜像存在，**没有在 Apple Silicon 执行过**。旧 MongoDB 的实际启动、卷权限、健康检查和驱动读写仍须本机验证。
+交接包制作时只验证了镜像存在。2026-10-22 已在当前 Mac 验证启动、容器健康和客户端连接，见下方 Colima 运行记录；真实材料入库与恢复验收仍需单独执行。
 不要改装其他 MongoDB 版本；不要因启动失败自动切换模拟架构、删除数据卷或改生产配置。
 
 建议 Docker Desktop 至少分配 4 CPU / 8 GiB 内存，保留约 15–20 GiB 可用磁盘；不足时先实际评估。
@@ -126,6 +128,21 @@ Compose 自动选本机架构，项目名 `kd-local`，不固定 container_name�
 只使用 `config --quiet` 检查，不打印展开后的 compose（会显示本机生成的密码）。
 停止用 `./deploy/db.sh stop`；恢复用 start。不要删除 `.local/volumes`。
 当前隔离配置不提供生产鉴权，禁止将端口改为公网暴露。
+
+### 当前 Mac 的 Colima 运行方式（2026-10-22）
+
+当前阶段在本机完成环境搭建，服务器迁移后续进行。使用既有 Colima profile `kd-dev`（ARM64、4 CPU、8 GiB）运行项目 `kd-local` 的 MongoDB、Milvus、etcd、MinIO；项目 `.env` 保持 MongoDB `127.0.0.1:27017`、数据库 `kd_dev`，Milvus `127.0.0.1:19530`。原开发 `.env` 中的远端地址及业务库凭据仅作为未来迁移参考，不覆盖本机隔离配置。当前 RAG 模块读取 `KD_MONGO_URI` / `KD_MONGO_DATABASE`，不能仅复制旧 `MongoDB_*` 字段来切换该模块的连接。
+
+本次本机连接拒绝的原因是 `kd-dev` 虚拟机已停止。恢复既有实例后，四个数据库依赖容器自动启动并达到 healthy。以下命令显式选择本项目 Docker context，不更改全局默认 context：
+
+```bash
+colima start kd-dev --activate=false
+DOCKER_CONTEXT=colima-kd-dev ./deploy/db.sh ps
+# 若此前显式停止过项目容器，再执行：
+DOCKER_CONTEXT=colima-kd-dev ./deploy/db.sh start
+```
+
+本次验证：项目 MongoDB 客户端 ping 成功，版本 4.0.28；Milvus 健康端点返回 OK，驱动返回版本 2.6.24；`SandboxRAG` 加载当前 qwen / 1024 维配置、连接 `kd_dev` 并完成空库查询，项目 Milvus 包装类连接成功。MongoDB 与 Milvus 集合数均为 0；本次没有调用 embedding API 或写入知识，不能作为切片入库、语义检索或正式发布验收。
 
 ### MinIO 原版本静态镜像交接
 
@@ -173,19 +190,19 @@ docker image inspect kd-handoff/minio:RELEASE.2024-12-18T13-15-44Z-arm64 --forma
 ```
 
 MCP 配置生成于 `.local/mcp.local.json`，绝对路径动态产生，支持当前包含空格的工作区路径。
-包含最新蒸馏 21 工具、单一开发 RAG 工作流，以及可选方案生成 Agent；不含模型密钥。
+主服务 `knowledge-distillation` 保持唯一：1.2.1验收版30个工具；1.3.0共31个工具，WorkBuddy已通过 OA 分类元数据正向入库与检索筛选验收。开发 RAG 能力挂在同一服务上，不含模型密钥。旧的独立 RAG/方案生成 MCP 配置仅属专项开发历史。
 用本地 Codex MCP 配置机制加载，并实际验证握手。不要直接使用带 /workspace 路径的 cloud.mcp.example.json。
 `deploy/api.sh` 前台运行 HTTP 服务 `http://127.0.0.1:8001/docs`，Ctrl-C 停止；无需 macOS 不自带的 setsid。
 原 dev-services.sh / CLOUD-README.md 保留为云端历史说明，不作为 Mac 启动入口。
 
 ## 5. 验证边界与顺序
 
-云端原提交 99 项通过；本地适配导出副本也在 Linux/Python 3.12 用既有依赖环境重跑 99 项通过（非 Mac 执行证据，见 handoff/mac-export-tests.log）。
+交接包制作时的云端原提交 99 项通过及本地适配副本 99 项通过（Linux/Python 3.12，非 Mac 证据）保留作历史记录，见 handoff/mac-export-tests.log。1.2.1主链自动化套件125项通过；真实 Qwen 请求返回 1024 维；单 MCP 协议预检确认 30 工具、空列表、路径脱敏。
 云端使用真实 MongoDB 4.0.28 / Milvus 2.6.24，但向量为 fixture。
 覆盖上传/Word 解析、合成模型草稿、导出哈希、body 切片、来源版本、入库/回读、幂等、部分失败、
 重试、版本切换、跨知识类型切换、并发同知识互斥及撤回。7 份交付样本通过；2 份旧路由拒绝，客户样本未打包。
 真实 DeepSeek/Qwen 调用在云端被代理 CONNECT 403 阻断，未验证密钥、模型 ID、真实语义检索或生成质量。
-公司文件服务、真实多模态蒸馏、正式审核发布及多人权限均未验收。
+WorkBuddy 已完成1.2.1主OA发布（65/65 verified）、检索、图形资产和目录复测；1.3.0产品线/领域catalog恢复待WorkBuddy验收，撤回未做黑盒验证。公司 file server、remote auth、生产发布和生产多人权限尚未实现。用户机器上的本地审核/发布能力范围为 `local_development`，不代表这些生产集成已验收。
 
 先执行（不调用外部模型）：
 

@@ -15,14 +15,16 @@ def service():
 
 @server.tool()
 def rag_knowledge(action: str, path: str = '', query: str = '', knowledge_type: str = '',
-                  knowledge_id: str = '', revision: int = 0, limit: int = 5) -> dict:
-    """开发知识工作流：ingest 指定 MD+JSON；search 返回版本和来源；read 回读；withdraw 撤回。"""
+                  stage: str = '', knowledge_id: str = '', revision: int = 0,
+                  limit: int = 5) -> dict:
+    """内部开发 RAG：stage 是六阶段主分类，knowledge_type 是可选文档类型筛选；read/withdraw 用 stage。"""
     try:
         rag = service()
         if action == 'ingest': return rag.ingest(path)
-        if action == 'search': return {'results': rag.search(query, knowledge_type or None, limit)}
-        if action == 'read': return {'document': rag.read(knowledge_type, knowledge_id, revision or None)}
-        if action == 'withdraw': return rag.withdraw(knowledge_type, knowledge_id)
+        if action == 'search':
+            return {'results': rag.search(query, knowledge_type or None, limit, stage=stage or None)}
+        if action == 'read': return {'document': rag.read(stage, knowledge_id, revision or None)}
+        if action == 'withdraw': return rag.withdraw(stage, knowledge_id, revision or None)
         raise ValueError('action 必须为 ingest/search/read/withdraw')
     except Exception as exc:
         raise ToolError(str(exc)) from exc

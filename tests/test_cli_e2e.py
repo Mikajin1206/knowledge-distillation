@@ -94,6 +94,7 @@ class CliEndToEnd(unittest.TestCase):
                                      "--type", "方案设计", "--md-file", str(md_file),
                                      "--sources-json", str(sources_file),
                                      "--quality-report-json", str(quality_file),
+                                     "--products", "致远 OA", "--domain", "办公协同",
                                      "--model", "cli-e2e-stub"))
         knowledge_id = draft["knowledge_id"]
         self.assertEqual("draft", draft["status"])

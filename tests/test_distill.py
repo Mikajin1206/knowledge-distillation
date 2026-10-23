@@ -3,20 +3,28 @@ from __future__ import annotations
 
 import json
 import hashlib
+import sqlite3
 import tempfile
 import unittest
 import zipfile
 from pathlib import Path
 
 from tests._path import *  # noqa: F401,F403
+from ckp import db
 from ckp.distill import Distill
-from ckp.md_render import export_draft, split_frontmatter, verify_md
+from ckp.md_render import export_draft, split_frontmatter, verify_md, verify_sidecar
 from ckp.quality import score_quality
 from ckp.store import Store
 
 
 def make_repo(tmp: Path) -> Path:
     repo = tmp / "repo"
+    catalog_path = repo / "config" / "product_domain_catalog.json"
+    catalog_path.parent.mkdir(parents=True, exist_ok=True)
+    catalog_path.write_text(json.dumps({
+        "schema": "ckp-product-domain-catalog/v1",
+        "products": [{"name": "测试产品", "domains": ["测试领域", "办公协同"]}],
+    }, ensure_ascii=False), encoding="utf-8")
     rules_dir = repo / "templates" / "蒸馏规范"
     rules_dir.mkdir(parents=True)
     (rules_dir / "rules.json").write_text(
@@ -99,6 +107,8 @@ class DistillTest(unittest.TestCase):
 
     def _submit(self, *args, **kwargs):
         kwargs.setdefault("quality_report", self._prepare_quality(args[0]))
+        kwargs.setdefault("products", "测试产品")
+        kwargs.setdefault("domain", ["测试领域"])
         return self.distill.submit_draft(*args, **kwargs)
 
     def _task(self):
@@ -107,6 +117,89 @@ class DistillTest(unittest.TestCase):
     def _sources(self, location="全文"):
         return [{"file_id": self.file_id, "version_id": self.version_id,
                  "location": location, "supports": "正文示例"}]
+
+    def test_products_and_domains_are_explicit_and_snapshot_immutable(self):
+        task = self._task()
+        self.distill.attach(task["task_id"], self.file_id)
+        draft = self._submit(task["task_id"], "显式元数据", "概要设计",
+                             BODY + "\n产品范围：不从这里提取。\n", self._sources(),
+                             products="测试产品", domain=["办公协同"])
+
+        self.assertEqual("测试产品", draft["products"])
+        self.assertEqual(["办公协同"], draft["domain"])
+        catalog_path = self.distill.repo_root / "config" / "product_domain_catalog.json"
+        catalog_path.write_text(json.dumps({
+            "schema": "ckp-product-domain-catalog/v1",
+            "products": [{"name": "后来产品", "domains": ["后来领域"]}],
+        }, ensure_ascii=False), encoding="utf-8")
+        reread = self.distill.get_draft(draft["knowledge_id"], draft["revision"])
+        self.assertEqual("测试产品", reread["products"])
+        self.assertEqual(["办公协同"], reread["domain"])
+
+    def test_new_draft_rejects_missing_multi_product_and_mismatched_domain(self):
+        task = self._task()
+        self.distill.attach(task["task_id"], self.file_id)
+        submissions = [
+            {"products": "", "domain": ["测试领域"]},
+            {"products": ["测试产品", "测试产品"], "domain": ["测试领域"]},
+            {"products": "致远 OA", "domain": ["测试领域"]},
+        ]
+        for selection in submissions:
+            with self.subTest(selection=selection), self.assertRaises(ValueError):
+                self._submit(task["task_id"], "不应写入", "概要设计",
+                             BODY, self._sources(), **selection)
+        self.assertEqual([], self.distill.list_drafts())
+
+    def test_legacy_draft_read_is_readonly_and_never_infers_metadata(self):
+        legacy_data = self.tmp / "legacy-data"
+        legacy_data.mkdir()
+        db_path = legacy_data / "ckp.sqlite3"
+        legacy_schema = db.SCHEMA.replace(
+            "  products TEXT NOT NULL DEFAULT '',\n  domain TEXT NOT NULL DEFAULT '[]',\n", "")
+        with sqlite3.connect(db_path) as conn:
+            conn.executescript(legacy_schema)
+            conn.execute(
+                "INSERT INTO distill_tasks (task_id, project_id, stage, rules_version, rules_hash, created_at, updated_at) "
+                "VALUES ('old-task', 'old-project', '方案与设计', 'rules-v1', 'rules-hash', 'now', 'now')")
+            conn.execute(
+                "INSERT INTO drafts (knowledge_id, revision, task_id, project_id, stage, title, knowledge_type, "
+                "topics, body_md, content_hash, sources_json, rules_version, created_at) "
+                "VALUES ('old-knowledge', 1, 'old-task', 'old-project', '方案与设计', '旧草稿', '项目知识', "
+                "'[]', '产品范围：致远 OA。', 'unchanged-hash', '[]', 'rules-v1', 'now')")
+
+        with sqlite3.connect(db_path) as conn:
+            before_columns = {row[1] for row in conn.execute("PRAGMA table_info(drafts)")}
+        repo = self.distill.repo_root
+        readonly_store = Store(legacy_data, readonly=True)
+        self.addCleanup(readonly_store.conn.close)
+        legacy = Distill(readonly_store, repo).get_draft("old-knowledge", 1)
+        after_read_columns = {row[1] for row in readonly_store.conn.execute("PRAGMA table_info(drafts)")}
+        self.assertNotIn("products", before_columns)
+        self.assertNotIn("domain", before_columns)
+        self.assertEqual(before_columns, after_read_columns)
+        self.assertEqual("", legacy["products"])
+        self.assertEqual([], legacy["domain"])
+        self.assertEqual("unchanged-hash", legacy["content_hash"])
+        self.assertEqual("产品范围：致远 OA。", legacy["body_md"])
+        project = {"project_id": "old-project", "name": "旧项目", "industry": [],
+                   "products": [], "owner": "", "tags": []}
+        exported = export_draft(legacy, project, legacy_data / "export")
+        frontmatter = split_frontmatter(Path(exported["md"]).read_text(encoding="utf-8"))[0]
+        sidecar = json.loads(Path(exported["json"]).read_text(encoding="utf-8"))
+        self.assertEqual("legacy_unconfirmed", exported["classification_status"])
+        self.assertEqual("", frontmatter.get("products", ""))
+        self.assertEqual([], frontmatter.get("domain", []))
+        self.assertNotIn("classification", sidecar)
+        self.assertEqual([], sidecar["rag_selection"]["document_ref"].get("products", []))
+        self.assertEqual([], sidecar["rag_selection"]["document_ref"].get("domain", []))
+
+        writable_store = Store(legacy_data)
+        self.addCleanup(writable_store.conn.close)
+        migrated = Distill(writable_store, repo).get_draft("old-knowledge", 1)
+        self.assertEqual("", migrated["products"])
+        self.assertEqual([], migrated["domain"])
+        self.assertEqual("unchanged-hash", migrated["content_hash"])
+        self.assertEqual("产品范围：致远 OA。", migrated["body_md"])
 
     def test_existing_database_migrates_quality_report_snapshot_column(self):
         self.store.conn.execute("ALTER TABLE drafts DROP COLUMN quality_report_json")
@@ -118,8 +211,49 @@ class DistillTest(unittest.TestCase):
         migrated.conn.close()
 
     def test_stage_must_be_valid(self):
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, "未知项目阶段.*立项与范围.*运维与改进"):
             self.distill.start_task("演示项目", "不存在的阶段")
+
+    def test_guidance_exposes_stage_options_and_document_type_suggestions(self):
+        task = self._task()
+        guidance = self.distill.guidance(task["task_id"])
+        self.assertEqual(
+            ["立项与范围", "调研与需求", "方案与设计", "实施与变更", "测试与验收", "运维与改进"],
+            guidance["stage_options"],
+        )
+        self.assertEqual(
+            ["方案设计", "调研报告", "概要设计", "开发功能说明书"],
+            guidance["document_type_options"],
+        )
+
+    def test_document_type_is_required_but_not_restricted_to_suggestions(self):
+        task = self._task()
+        self.distill.attach(task["task_id"], self.file_id)
+        draft = self._submit(task["task_id"], "项目知识条目", "项目知识", BODY, self._sources())
+        self.assertEqual("项目知识", draft["knowledge_type"])
+        with self.assertRaisesRegex(ValueError, "文档类型不能为空.*方案设计.*调研报告"):
+            self._submit(task["task_id"], "无类型", "", BODY, self._sources())
+
+    def test_legacy_unknown_type_remains_readable_and_correction_is_new_revision(self):
+        task = self._task()
+        self.distill.attach(task["task_id"], self.file_id)
+        original = self._submit(
+            task["task_id"], "历史草稿", "方案设计", BODY, self._sources()
+        )
+        self.store.conn.execute(
+            "UPDATE drafts SET knowledge_type = ? WHERE knowledge_id = ? AND revision = ?",
+            ("项目知识", original["knowledge_id"], original["revision"]),
+        )
+        self.store.conn.commit()
+
+        legacy = self.distill.get_draft(original["knowledge_id"], 1)
+        self.assertEqual("项目知识", legacy["knowledge_type"])
+        revised = self._submit(
+            task["task_id"], "历史草稿", "项目知识-修订", BODY + "\n修订内容。\n",
+            self._sources(), knowledge_id=original["knowledge_id"],
+        )
+        self.assertEqual(2, revised["revision"])
+        self.assertEqual("项目知识-修订", revised["knowledge_type"])
 
     def test_guidance_requires_rules(self):
         task = self._task()
@@ -147,11 +281,20 @@ class DistillTest(unittest.TestCase):
         copy = self.distill.material_copy(task["task_id"], self.file_id)
         with zipfile.ZipFile(copy["path"]) as archive:
             self.assertIn("# 需求", archive.read("word/document.xml").decode())
-        self.distill.cleanup_task(task["task_id"])
+        closed = self.distill.cleanup_task(task["task_id"])
+        self.assertTrue(closed["tmp_removed"])
+        self.assertEqual("removed", closed["tmp_cleanup_status"])
         self.assertFalse(Path(copy["path"]).exists())
         self.assertEqual("closed", self.distill.get_task(task["task_id"])["status"])
         with self.assertRaises(ValueError):
             self.distill.attach(task["task_id"], self.file_id)
+
+    def test_cleanup_reports_missing_temp_directory_without_claiming_removal(self):
+        task = self._task()
+        closed = self.distill.cleanup_task(task["task_id"])
+        self.assertFalse(closed["tmp_removed"])
+        self.assertEqual("not_present", closed["tmp_cleanup_status"])
+        self.assertEqual("closed", closed["status"])
 
     def test_gap_and_human_input_require_content(self):
         task = self._task()
@@ -204,7 +347,8 @@ class DistillTest(unittest.TestCase):
             sources=[{"file_id": self.file_id, "version_id": attached["version_id"],
                       "location": "第 1 段", "supports": "测试来源"}],
             quality_report={"scores": {"core_coverage": 1},
-                            "evidence": {"core_coverage": "内容很少"}})
+                            "evidence": {"core_coverage": "内容很少"}},
+            products="测试产品", domain=["测试领域"])
         self.assertEqual("test-score-v1", draft["quality_check"]["score_version"])
         self.assertEqual(50, draft["quality_check"]["weighted_score"])
 
@@ -250,6 +394,15 @@ class DistillTest(unittest.TestCase):
         self.assertTrue(md_path.exists())
         check = verify_md(md_path)
         self.assertTrue(check["match"])
+        sidecar_check = verify_sidecar(Path(out["json"]), md_path)
+        self.assertTrue(sidecar_check["match"])
+        sidecar_path = Path(out["json"])
+        original_sidecar = sidecar_path.read_bytes()
+        tampered_sidecar = json.loads(original_sidecar)
+        tampered_sidecar["title"] = "tampered"
+        sidecar_path.write_text(json.dumps(tampered_sidecar), encoding="utf-8")
+        self.assertFalse(verify_sidecar(sidecar_path, md_path)["match"])
+        sidecar_path.write_bytes(original_sidecar)
         self.assertEqual(draft["content_hash"], check["content_hash_actual"])
         sidecar = json.loads(Path(out["json"]).read_text(encoding="utf-8"))
         self.assertEqual("ckp-distilled-knowledge/v0.4", sidecar["schema"])
@@ -278,7 +431,8 @@ class DistillTest(unittest.TestCase):
         self.assertEqual("test-score-v1", sidecar["quality_check"]["score_version"])
         self.assertIn("quality_score", md_path.read_text(encoding="utf-8"))
         frontmatter, _ = split_frontmatter(md_path.read_text(encoding="utf-8"))
-        self.assertEqual(["ERP", "CRM"], frontmatter["products"])
+        self.assertEqual("测试产品", frontmatter["products"])
+        self.assertEqual(["测试领域"], frontmatter["domain"])
         for process_field in ("stage", "owner", "task_id", "model", "rules_version",
                               "quality_score_version", "topics", "industry"):
             self.assertNotIn(process_field, frontmatter)
@@ -298,12 +452,14 @@ class DistillTest(unittest.TestCase):
     def test_frontmatter_roundtrip_with_special_chars(self):
         from ckp.md_render import render_frontmatter
         meta = {"knowledge_id": "k-abc", "revision": 1,
-                "title": '含"引号"与\n换行 的标题', "products": ["ERP", "主,题"],
+                "title": '含"引号"与\n换行 的标题', "products": "ERP",
+                "domain": ["财务会计", "主,题"],
                 "content_hash": "x" * 64}
         text = render_frontmatter(meta) + "正文\n"
         parsed, body = split_frontmatter(text)
         self.assertEqual('含"引号"与\n换行 的标题', parsed["title"])
-        self.assertEqual(["ERP", "主,题"], parsed["products"])
+        self.assertEqual("ERP", parsed["products"])
+        self.assertEqual(["财务会计", "主,题"], parsed["domain"])
         self.assertEqual("正文\n", body)
 
 

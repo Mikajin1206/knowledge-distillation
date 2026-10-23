@@ -18,11 +18,10 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from ckp import db
+from ckp.catalog import validate_selection
 from ckp.intake import hash_file, now_iso
+from ckp.knowledge_types import DOCUMENT_TYPE_OPTIONS, STAGES, validate_stage
 from ckp.quality import load_score_policy, read_score_snapshot, score_quality, write_score_snapshot
-
-# 与需求规格 4.2 的六个阶段一致；任务必须落在一个阶段，材料允许跨阶段。
-STAGES = ("立项与范围", "调研与需求", "方案与设计", "实施与变更", "测试与验收", "运维与改进")
 
 # 正文只要求与知识适用性直接相关的冲突/缺口说明；来源、评分和处理证据由 sidecar 承载。
 REQUIRED_SECTIONS = ("冲突、缺口与待确认项",)
@@ -118,9 +117,7 @@ class Distill:
 
         def run() -> dict:
             project = self.store.get_project(project_ref)
-            clean_stage = (stage or "").strip()
-            if clean_stage not in STAGES:
-                raise ValueError(f"阶段必须是 {', '.join(STAGES)} 之一，收到: {clean_stage or '(空)'}")
+            clean_stage = validate_stage(stage)
             now = now_iso()
             self.store.conn.execute(
                 "INSERT INTO distill_tasks (task_id, project_id, stage, status, rules_version, rules_hash,"
@@ -269,6 +266,8 @@ class Distill:
         return {"task_id": task["task_id"], "stage": task["stage"],
                 "status": task["status"], "project": task["project_name"],
                 "project_owner": task["project_owner"],
+                "stage_options": list(STAGES),
+                "document_type_options": list(DOCUMENT_TYPE_OPTIONS),
                 "rules_version": rules["version"], "rules_hash": rules["hash"],
                 "score_policy": {key: value for key, value in score_policy.items() if key != "hash"},
                 "score_policy_hash": score_policy["hash"],
@@ -318,7 +317,7 @@ class Distill:
                                     "程序保留原字节不转换，请客户端以合适编码读取并在处理记录中注明"),
             (False, "binary"): "非纯文本/办公格式：按规范由客户端能力读取；程序未解析",
         }[(direct_text, encoding)]
-        return {"task_id": task_id, "file_id": file_id,
+        return {"task_id": task_id, "file_id": file_id, "filename": material["filename"],
                 "version_id": material["version_id"], "path": str(target),
                 "sha256": verified["sha256"], "verified": True,
                 "direct_text": direct_text, "encoding": encoding,
@@ -377,7 +376,8 @@ class Distill:
             "UPDATE distill_tasks SET status = 'closed', updated_at = ? WHERE task_id = ?",
             (now_iso(), task_id))
         self.store.conn.commit()
-        return {"task_id": task_id, "status": "closed", "tmp_removed": removed}
+        return {"task_id": task_id, "status": "closed", "tmp_removed": removed,
+                "tmp_cleanup_status": "removed" if removed else "not_present"}
 
     def _tmp_dir(self, task_id: str) -> Path:
         return self.repo_root / "tmp" / "distill" / task_id
@@ -388,23 +388,32 @@ class Distill:
                      body_md: str, sources: list[dict] | None = None, model: str | None = None,
                      knowledge_id: str | None = None, topics: list[str] | None = None,
                      quality_report: dict | None = None,
+                     products: str = "", domain: list[str] | None = None,
                      request_id: str | None = None) -> dict:
+        knowledge_type = str(knowledge_type or "").strip()
+        if not knowledge_type:
+            raise ValueError(
+                "文档类型不能为空；建议值：" + "、".join(DOCUMENT_TYPE_OPTIONS)
+            )
         self.store._require_write()
         payload = {"task_id": task_id, "title": title, "knowledge_type": knowledge_type,
                    "body_md": body_md, "sources": sources, "model": model,
                    "knowledge_id": knowledge_id, "topics": topics,
-                   "quality_report": quality_report}
+                   "quality_report": quality_report, "products": products,
+                   "domain": domain}
 
         def run() -> dict:
             return self._submit_draft(task_id, title, knowledge_type, body_md,
-                                      sources, model, knowledge_id, topics, quality_report)
+                                      sources, model, knowledge_id, topics, quality_report,
+                                      products, domain)
 
         return db.idempotent(self.store.conn, request_id, "submit_draft", payload, run)
 
     def _submit_draft(self, task_id: str, title: str, knowledge_type: str,
                       body_md: str, sources: Any, model: str | None,
                       knowledge_id: str | None, topics: list[str] | None,
-                      quality_report: dict | None) -> dict:
+                      quality_report: dict | None, products: str,
+                      domain: list[str] | None) -> dict:
         task = self.get_task(task_id)
         if task["status"] == "closed":
             raise ValueError("任务已关闭，不能提交草稿")
@@ -419,14 +428,17 @@ class Distill:
                 + ", ".join(unsupported[:8])
             )
         title = (title or "").strip()
-        knowledge_type = (knowledge_type or "").strip()
+        knowledge_type = str(knowledge_type or "").strip()
         if not title:
             raise ValueError("标题不能为空")
         if not knowledge_type:
-            raise ValueError("知识类型不能为空（如：方案设计/问题案例/操作步骤）")
+            raise ValueError(
+                "文档类型不能为空；建议值：" + "、".join(DOCUMENT_TYPE_OPTIONS)
+            )
         body_md = str(body_md or "").replace("\r\n", "\n")
         if not body_md.strip():
             raise ValueError("草稿正文不能为空")
+        products, domain = validate_selection(self.repo_root, products, domain)
         quality_report_snapshot = quality_report if isinstance(quality_report, dict) else {}
         materials = {m["version_id"]: m for m in task["materials"]}
         supplied_sources = isinstance(sources, list) and bool(sources)
@@ -544,6 +556,7 @@ class Distill:
             "knowledge_id": knowledge_id, "revision": revision, "task_id": task_id,
             "project_id": task["project_id"], "stage": task["stage"],
             "title": title, "knowledge_type": knowledge_type,
+            "products": products, "domain": db.dumps(domain),
             "topics": db.dumps(topics or []), "body_md": body_md,
             "content_hash": content_hash, "sources_json": db.dumps(checked_sources),
             "gaps_json": db.dumps(gaps_snapshot),
@@ -556,10 +569,10 @@ class Distill:
         }
         self.store.conn.execute(
             "INSERT INTO drafts (knowledge_id, revision, task_id, project_id, stage, title,"
-            " knowledge_type, topics, body_md, content_hash, sources_json, gaps_json,"
+            " knowledge_type, products, domain, topics, body_md, content_hash, sources_json, gaps_json,"
             " human_inputs_json, section_check_json, quality_json, quality_report_json, model, rules_version, status, created_at)"
             " VALUES (:knowledge_id, :revision, :task_id, :project_id, :stage, :title,"
-            " :knowledge_type, :topics, :body_md, :content_hash, :sources_json, :gaps_json,"
+            " :knowledge_type, :products, :domain, :topics, :body_md, :content_hash, :sources_json, :gaps_json,"
             " :human_inputs_json, :section_check_json, :quality_json, :quality_report_json, :model, :rules_version, :status,"
             " :created_at)", record)
         self.store.conn.execute(
@@ -579,7 +592,12 @@ class Distill:
         record = db.rowdict(row)
         if not record:
             raise ValueError(f"草稿不存在: {knowledge_id} rev {revision or '最新'}")
+        # Read-only connections do not apply schema migrations. Legacy rows keep
+        # their original metadata and are never backfilled from document text.
+        record.setdefault("products", "")
+        record.setdefault("domain", "[]")
         record["topics"] = db.loads(record["topics"], [])
+        record["domain"] = db.loads(record["domain"], [])
         record["sources"] = db.loads(record["sources_json"], [])
         record.pop("sources_json", None)
         record["gaps"] = db.loads(record["gaps_json"], [])

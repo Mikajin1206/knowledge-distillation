@@ -1,7 +1,7 @@
 """SQLite 连接、表结构、迁移与通用小工具。
 
 单用户本地 CLI 场景，短事务 + WAL；多进程并发写入不在本轮范围内。
-只读连接（readonly=True）不建目录、不建表、不设 PRAGMA，供查询与校验使用。
+只读连接（readonly=True）不写磁盘；数据库不存在时，在内存中建立空结构供查询。
 """
 from __future__ import annotations
 
@@ -116,6 +116,8 @@ CREATE TABLE IF NOT EXISTS drafts (
   stage TEXT NOT NULL,
   title TEXT NOT NULL,
   knowledge_type TEXT NOT NULL,
+  products TEXT NOT NULL DEFAULT '',
+  domain TEXT NOT NULL DEFAULT '[]',
   topics TEXT NOT NULL DEFAULT '[]',
   body_md TEXT NOT NULL,
   content_hash TEXT NOT NULL,
@@ -138,6 +140,45 @@ CREATE TABLE IF NOT EXISTS request_log (
   result_json TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS knowledge_reviews (
+  review_id TEXT PRIMARY KEY,
+  knowledge_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  content_hash TEXT NOT NULL,
+  snapshot_hash TEXT NOT NULL,
+  status TEXT NOT NULL,
+  requested_by TEXT NOT NULL,
+  reviewer TEXT,
+  comments TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  reviewed_at TEXT,
+  UNIQUE(knowledge_id, revision, snapshot_hash)
+);
+CREATE TABLE IF NOT EXISTS publish_tasks (
+  publish_task_id TEXT PRIMARY KEY,
+  knowledge_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  review_id TEXT NOT NULL,
+  snapshot_hash TEXT NOT NULL,
+  status TEXT NOT NULL,
+  phase TEXT NOT NULL,
+  completed INTEGER NOT NULL DEFAULT 0,
+  total INTEGER NOT NULL DEFAULT 0,
+  result_json TEXT NOT NULL DEFAULT '{}',
+  error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(knowledge_id, revision, snapshot_hash)
+);
+CREATE TABLE IF NOT EXISTS knowledge_asset_refs (
+  knowledge_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  asset_id TEXT NOT NULL,
+  file_id TEXT NOT NULL,
+  version_id TEXT NOT NULL,
+  sha256 TEXT NOT NULL,
+  PRIMARY KEY(knowledge_id, revision, asset_id)
+);
 """
 
 # 既有数据库的列补充；新库由 SCHEMA 直接建出。
@@ -148,6 +189,8 @@ _MIGRATIONS = (
     ("upload_records", "tags", "TEXT NOT NULL DEFAULT '[]'"),
     ("drafts", "gaps_json", "TEXT NOT NULL DEFAULT '[]'"),
     ("drafts", "human_inputs_json", "TEXT NOT NULL DEFAULT '[]'"),
+    ("drafts", "products", "TEXT NOT NULL DEFAULT ''"),
+    ("drafts", "domain", "TEXT NOT NULL DEFAULT '[]'"),
     ("drafts", "section_check_json", "TEXT NOT NULL DEFAULT '{}'"),
     ("drafts", "quality_json", "TEXT NOT NULL DEFAULT '{}'"),
     ("drafts", "quality_report_json", "TEXT NOT NULL DEFAULT '{}'"),
@@ -180,7 +223,13 @@ def connect(data_dir: Path, readonly: bool = False) -> sqlite3.Connection:
     db_path = data_dir / "ckp.sqlite3"
     if readonly:
         if not db_path.is_file():
-            raise ValueError(f"数据目录尚未初始化（找不到 {db_path}）；只读操作不创建数据库")
+            # 首次接入时，列表/查询入口应返回空集。用只存在于进程内的空库
+            # 提供完整 schema，既不要求用户先做写操作，也不在查询时初始化磁盘数据。
+            conn = sqlite3.connect(":memory:")
+            conn.row_factory = sqlite3.Row
+            _apply_schema(conn)
+            conn.execute("PRAGMA query_only=ON")
+            return conn
         conn = sqlite3.connect(db_path.absolute().as_uri() + "?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
         return conn

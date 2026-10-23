@@ -21,7 +21,7 @@ from ckp import db
 # frontmatter 中只放标量与字符串列表；完整来源/补充/缺口/检查记录在 sidecar。
 FM_SCALARS = ("knowledge_id", "revision", "title", "knowledge_type", "status",
               "project_id", "project_name", "quality_score", "content_hash")
-FM_LISTS = ("products",)
+FM_LISTS = ("products", "domain")
 
 
 def render_frontmatter(meta: dict) -> str:
@@ -34,6 +34,9 @@ def render_frontmatter(meta: dict) -> str:
     for field in FM_LISTS:
         values = meta.get(field) or []
         if not values:
+            continue
+        if isinstance(values, str):
+            lines.append(f"{field}: {_yq(values)}")
             continue
         lines.append(f"{field}:")
         lines.extend(f"  - {_yq(v)}" for v in values)
@@ -141,25 +144,13 @@ def extract_rag_payload(md_text: str, protected_assets: list[dict] | None = None
                      "project_id": frontmatter.get("project_id"),
                      "project_name": frontmatter.get("project_name"),
                      "products": frontmatter.get("products", []),
+                     "domain": frontmatter.get("domain", []),
                      "quality_score": frontmatter.get("quality_score"),
                      "content_hash": frontmatter.get("content_hash")},
         "sections": manifest,
         "document_ref": document_ref,
         "retrieval_md": retrieval_md if routing_valid else "",
     }
-
-
-_PRODUCT_SCOPE_RE = re.compile(r"^\s*(?:[-*]\s*)?产品范围[：:]\s*(.+?)\s*$", re.M)
-
-
-def extract_products(body_md: str) -> list[str]:
-    """Extract only explicitly labeled product names, never project-master tags."""
-    match = _PRODUCT_SCOPE_RE.search(body_md)
-    if not match:
-        return []
-    values = re.split(r"[；;]", match.group(1))
-    return list(dict.fromkeys(value.strip(" \t，,。；;") for value in values
-                              if value.strip(" \t，,。；;")))
 
 
 def _protected_assets_manifest(quality_report: dict) -> dict:
@@ -203,7 +194,8 @@ def build_sidecar(draft: dict, project: dict) -> dict:
         "project_name": project["name"],
         "quality_score": (draft.get("quality_check") or {}).get("weighted_score"),
         "content_hash": draft["content_hash"],
-        "products": extract_products(draft["body_md"]),
+        "products": draft.get("products") or "",
+        "domain": draft.get("domain") if draft.get("products") else [],
     }) + draft["body_md"]
     quality_report = draft.get("quality_report") or {}
     protected_assets = _protected_assets_manifest(quality_report)
@@ -212,7 +204,7 @@ def build_sidecar(draft: dict, project: dict) -> dict:
                     "sha256": item["sha256"]}
                    for item in draft.get("sources", [])]
     rag_payload = extract_rag_payload(rendered_md, protected_assets["items"], source_refs)
-    return {
+    result = {
         "schema": "ckp-distilled-knowledge/v0.4",
         "knowledge_id": draft["knowledge_id"],
         "revision": draft["revision"],
@@ -249,6 +241,18 @@ def build_sidecar(draft: dict, project: dict) -> dict:
                  "审核与发布由后续服务管理。RAG 切片只读取显式 kd-section 标识；"
                  "缺失或无效标识时必须停止入库。"),
     }
+    if draft.get('products'):
+        result['classification'] = {'products': draft['products'], 'domain': draft.get('domain', [])}
+    result['sidecar_sha256'] = sidecar_sha256(result)
+    return result
+
+
+def sidecar_sha256(sidecar: dict) -> str:
+    """Hash the canonical sidecar payload, excluding its checksum field."""
+    payload = {key: value for key, value in sidecar.items() if key != 'sidecar_sha256'}
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                           separators=(',', ':')).encode('utf-8')
+    return hashlib.sha256(canonical).hexdigest()
 
 
 def export_draft(draft: dict, project: dict, out_dir: Path,
@@ -260,7 +264,8 @@ def export_draft(draft: dict, project: dict, out_dir: Path,
     stem = f"{draft['knowledge_id']}_rev{draft['revision']:03d}"
     meta = {key: draft.get(key) for key in FM_SCALARS}
     meta["project_name"] = project["name"]
-    meta["products"] = extract_products(draft["body_md"])
+    meta["products"] = draft.get('products') or ""
+    meta["domain"] = draft.get('domain') if draft.get('products') else []
     quality_check = draft.get("quality_check") or {}
     meta["quality_score"] = quality_check.get("weighted_score")
     md_text = render_frontmatter(meta) + draft["body_md"]
@@ -270,7 +275,14 @@ def export_draft(draft: dict, project: dict, out_dir: Path,
     json_path.write_bytes(json.dumps(
         build_sidecar(draft, project), ensure_ascii=False, sort_keys=True, indent=2,
     ).encode("utf-8"))
-    return {"md": str(md_path), "json": str(json_path)}
+    exported_frontmatter, _ = split_frontmatter(md_path.read_text(encoding='utf-8'))
+    actual = {'products': exported_frontmatter.get('products', []),
+              'domain': exported_frontmatter.get('domain', [])}
+    expected = {'products': meta.get('products') or [], 'domain': meta.get('domain') or []}
+    if actual != expected:
+        raise ValueError('导出 frontmatter 的 products/domain 与草稿已确认选择不一致')
+    return {"md": str(md_path), "json": str(json_path), 'frontmatter': actual,
+            'classification_status': 'confirmed' if draft.get('products') else 'legacy_unconfirmed'}
 
 
 _FM_RE = re.compile(r"\A---\n(.*?)\n---\n", re.S)
@@ -332,4 +344,51 @@ def verify_md(md_path: Path) -> dict:
                    "status": meta.get("status"), "body_bytes": len(body_bytes),
                    "content_hash_claimed": claimed, "content_hash_actual": actual,
                    "match": claimed == actual})
+    return result
+
+
+def verify_sidecar(sidecar_path: Path, md_path: Path | None = None) -> dict:
+    """Verify the exported sidecar checksum and, when supplied, its MD identity."""
+    sidecar_path = Path(sidecar_path).expanduser()
+    result: dict = {'file': str(sidecar_path), 'match': False,
+                    'scope': 'JSON sidecar 规范化内容；可选核对与 Markdown 的知识版本身份'}
+    try:
+        raw = sidecar_path.read_bytes()
+        sidecar = json.loads(raw.decode('utf-8'))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        result['error'] = f'JSON sidecar 无法读取或解析: {exc}'
+        return result
+    if not isinstance(sidecar, dict):
+        result['error'] = 'JSON sidecar 顶层必须是对象'
+        return result
+    claimed = str(sidecar.get('sidecar_sha256') or '')
+    actual = sidecar_sha256(sidecar)
+    result.update({'sidecar_sha256_claimed': claimed,
+                   'sidecar_sha256_actual': actual,
+                   'match': bool(claimed) and claimed == actual})
+    if not claimed:
+        result['error'] = 'JSON sidecar 缺少 sidecar_sha256'
+        return result
+    if md_path is not None:
+        md_check = verify_md(md_path)
+        result['markdown_match'] = md_check.get('match', False)
+        if not result['markdown_match']:
+            result['match'] = False
+            result['error'] = 'Markdown 正文哈希校验失败'
+            return result
+        try:
+            md_meta, _ = split_frontmatter(Path(md_path).expanduser().read_text(encoding='utf-8'))
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            result['match'] = False
+            result['error'] = f'Markdown frontmatter 无法读取或解析: {exc}'
+            return result
+        expected = {key: md_meta.get(key) for key in ('knowledge_id', 'content_hash')}
+        expected['revision'] = str(md_meta.get('revision') or '')
+        actual_ref = {key: sidecar.get(key) for key in ('knowledge_id', 'content_hash')}
+        actual_ref['revision'] = str(sidecar.get('revision') or '')
+        result['document_ref_match'] = actual_ref == expected
+        if not result['document_ref_match']:
+            result['match'] = False
+            result['error'] = 'Markdown 与 sidecar 的知识版本或正文哈希不一致'
+            return result
     return result

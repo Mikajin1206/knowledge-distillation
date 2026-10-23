@@ -4,12 +4,11 @@
       "command": "/workspace/knowledge-distillation-cloud/ckp-mcp.sh",
       "env": {
         "CKP_DATA": "/workspace/knowledge-distillation-cloud/.cloud/data",
-        "CKP_OUTPUT": "/workspace/knowledge-distillation-cloud/.cloud/output"
+        "CKP_OUTPUT": "/workspace/knowledge-distillation-cloud/.cloud/output",
+        "CKP_LOCAL_ACTOR": "local-operator",
+        "CKP_REVIEWER_IDS": "local-operator",
+        "KD_EMBEDDING_MODE": "qwen"
       }
-    },
-    "knowledge-rag-development": {
-      "command": "/workspace/knowledge-distillation-cloud/rag-mcp.sh",
-      "env": {"KD_EMBEDDING_MODE": "fixture"}
     }
   }
 }

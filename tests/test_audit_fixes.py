@@ -31,6 +31,12 @@ BODY = """# 知识
 
 def make_repo(tmp: Path) -> Path:
     repo = tmp / "repo"
+    catalog_path = repo / "config" / "product_domain_catalog.json"
+    catalog_path.parent.mkdir(parents=True, exist_ok=True)
+    catalog_path.write_text(json.dumps({
+        "schema": "ckp-product-domain-catalog/v1",
+        "products": [{"name": "测试产品", "domains": ["测试领域", "办公协同"]}],
+    }, ensure_ascii=False), encoding="utf-8")
     rules_dir = repo / "templates" / "蒸馏规范"
     rules_dir.mkdir(parents=True)
     (rules_dir / "rules.json").write_text(
@@ -60,7 +66,8 @@ class FixBase(unittest.TestCase):
 
         def submit_word_fixture(task_id, title, knowledge_type, body_md, sources,
                                 model=None, knowledge_id=None, topics=None,
-                                quality_report=None, request_id=None):
+                                quality_report=None, products="测试产品",
+                                domain=None, request_id=None):
             task = self.distill.get_task(task_id)
             for material in task["materials"]:
                 scanned = self.store.conn.execute(
@@ -72,7 +79,9 @@ class FixBase(unittest.TestCase):
                 quality_report = {"asset_reviews": [], "flowcharts": [], "table_checks": []}
             return submit(task_id, title, knowledge_type, body_md, sources,
                           model=model, knowledge_id=knowledge_id, topics=topics,
-                          quality_report=quality_report, request_id=request_id)
+                          quality_report=quality_report, products=products,
+                          domain=domain if domain is not None else ["测试领域"],
+                          request_id=request_id)
 
         self.distill.submit_draft = submit_word_fixture
 
@@ -305,7 +314,8 @@ class F08VerifyBytesAndExitCode(unittest.TestCase):
                     "supports": "结论"}]
         draft = self.distill.submit_draft(
             task["task_id"], "知识", "方案设计", BODY, sources,
-            quality_report={"asset_reviews": [], "flowcharts": [], "table_checks": []})
+            quality_report={"asset_reviews": [], "flowcharts": [], "table_checks": []},
+            products="测试产品", domain=["测试领域"])
         out = export_draft(self.distill.get_draft(draft["knowledge_id"]),
                            self.store.get_project("项目"), self.tmp / "out")
         self.md_path = Path(out["md"])
@@ -433,16 +443,18 @@ class F13OfficeMetadataPersisted(FixBase):
 class F14FrontmatterTypes(unittest.TestCase):
     def test_single_element_list_stays_list(self):
         from ckp.md_render import render_frontmatter
-        text = render_frontmatter({"products": ["one"]}) + "正文\n"
+        text = render_frontmatter({"products": "one", "domain": ["领域一"]}) + "正文\n"
         meta, _ = split_frontmatter(text)
-        self.assertEqual(["one"], meta["products"])
+        self.assertEqual("one", meta["products"])
+        self.assertEqual(["领域一"], meta["domain"])
 
     def test_zero_and_many(self):
         from ckp.md_render import render_frontmatter
         text = render_frontmatter({"topics": ["ignored"], "industry": ["a", "b"],
-                                   "products": ["ERP", "CRM"]}) + "x\n"
+                                   "products": "ERP", "domain": ["财务会计", "供应链"]}) + "x\n"
         meta, _ = split_frontmatter(text)
-        self.assertEqual(["ERP", "CRM"], meta["products"])
+        self.assertEqual("ERP", meta["products"])
+        self.assertEqual(["财务会计", "供应链"], meta["domain"])
         self.assertNotIn("topics", meta)
         self.assertNotIn("industry", meta)
 
@@ -505,11 +517,12 @@ class F16ReadOnlyQueryNoSideEffects(unittest.TestCase):
         self.assertFalse((self.tmp / "never-created").exists())
         self.assertIn('"match": false', buffer.getvalue())
 
-    def test_query_on_missing_data_dir_errors_without_creating(self):
+    def test_query_on_missing_data_dir_returns_empty_without_creating(self):
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(io.StringIO()):
             code = cli.main(["file", "list"])
-        self.assertEqual(2, code)
+        self.assertEqual(0, code)
+        self.assertEqual("", buffer.getvalue().strip())
         self.assertFalse((self.tmp / "never-created").exists())
 
 

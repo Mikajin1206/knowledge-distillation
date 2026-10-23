@@ -143,6 +143,7 @@ def cmd_draft(args) -> int:
             args.task_id, args.title, args.knowledge_type, body, sources,
             model=args.model, knowledge_id=args.knowledge_id,
             topics=_split_list(args.topics), quality_report=quality_report,
+            products=args.products, domain=_split_list(args.domain),
             request_id=args.request_id))
     elif args.action == "show":
         draft = distill.get_draft(args.knowledge_id, args.revision)
@@ -254,6 +255,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_submit.add_argument("--model", default=None)
     p_submit.add_argument("--knowledge-id", default=None)
     p_submit.add_argument("--topics", default="")
+    p_submit.add_argument("--products", required=True,
+                          help="项目经理从 metadata_catalog 选择的单一产品线")
+    p_submit.add_argument("--domain", required=True,
+                          help="该产品线关联领域，逗号分隔，可多选")
     p_submit.add_argument("--request-id", default=None)
     p_kshow = p_draft_sub.add_parser("show")
     p_kshow.add_argument("knowledge_id")

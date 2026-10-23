@@ -5,7 +5,10 @@
       "args": [],
       "env": {
         "CKP_DATA": "/PRIVATE/PATH/TO/knowledge-distillation-data",
-        "CKP_OUTPUT": "/PRIVATE/PATH/TO/knowledge-distillation-output"
+        "CKP_OUTPUT": "/PRIVATE/PATH/TO/knowledge-distillation-output",
+        "CKP_LOCAL_ACTOR": "local-operator",
+        "CKP_REVIEWER_IDS": "local-operator",
+        "KD_EMBEDDING_MODE": "qwen"
       }
     }
   }

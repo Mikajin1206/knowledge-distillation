@@ -1,5 +1,11 @@
 # 云端开发与验证
 
+## 当前状态（2026-10-22）
+
+本文件余下的云端/MongoDB/Milvus 过程是历史开发记录；旧 `knowledge-rag-development`、`ai-generate-solution` 模块仅作内部开发兼容保留，不单独对外注册；方案生成独立入口停用。WorkBuddy 当前统一入口仍是 `knowledge-distillation` / `ckp-mcp.sh`。1.2.1 主链已通过 WorkBuddy 验收，为30工具；1.3.0 在同一服务提供31工具，产品线/领域契约已通过 OA 正向黑盒入库和检索筛选验收。撤回与若干负向输入仍未做 WorkBuddy 黑盒验证。旧 `rag-mcp.sh` 与 `ai-generate-solution-mcp.sh` 仅作历史专项开发/CLI 入口，不作为额外 WorkBuddy MCP 配置。
+
+本地已具备 `local_development` 身份范围下的审核记录、异步发布、逐块读回校验和 `local_versioned_store` 图形 JSON 版本存储/读取。公司 file server、remote auth 和生产发布仍未实现。2026-10-22 WorkBuddy 完成1.2.1主OA发布（65/65 verified）、三项检索、图形资产与目录定向复测；2026-10-23 完成1.3.0 OA分类元数据正向入库、65/65 verified及检索正反筛选。撤回未做黑盒验证，项目完整自动化套件138项通过。详细状态见 [docs/07](docs/07-单MCP本地RAG开发与黑盒验收.md)。
+
 合并工作区：`/workspace/knowledge-distillation-cloud`，分支 `cloud/rag-integration`。
 最新蒸馏基准为 `97ec6fe`；`src/ckp`、模板、Skill 与原有 MCP 工具保持该提交的实现。
 原工作区 `/workspace/knowledge-distillation` 保留不动。
@@ -11,7 +17,7 @@
 
 保留开发交付的 MongoDB、Milvus、OpenAI 兼容 embedding、文件服务适配器与方案生成模块。
 入库入口改用最新 CKP 的正文哈希、章节路由和 sidecar 契约。只支持 `body`/`exclude`；
-旧 `metadata`/`audit` 标记、无效或重复标记拒绝入库，不猜测、不自动改写。
+章节路由仅支持 `body`/`exclude`；RAG 主分类采用阶段材料清单六阶段，`knowledge_type` 仅为补充文档类型。`stage` 由经审核 sidecar 路由集合及 metadata 提供，不进入 MD 最小头。旧 `metadata`/`audit` 标记、无效或重复标记拒绝入库，不猜测、不自动改写。
 
 原来的全目录扫描与删除集合已移除。现在显式传入一个 MD，必须存在同名 JSON。
 向量保留完整来源版本、知识版本、章节路径、位置偏移和保护资产引用。
@@ -19,7 +25,7 @@ MD/JSON 归档在本机 `.cloud/archive`，MongoDB 保存清洁检索视图及�
 这里的源定位是导出中的版本引用；本次没有连接公司文件服务器重新验证 Word 原件。
 
 MongoDB 使用 `kd_dev` 库，Milvus 集合使用 `kd_dev_fixture_`、`kd_dev_local_` 或旧适配器的 `kd_dev_qwen_` 前缀。
-所有内容均为开发沙箱，允许验证 draft；不表示项目经理审核通过，不提供正式发布。
+此云端记录属于开发沙箱，不证明公司服务身份或生产发布已接通。
 不写入生产集合。原有版本和审计记录保留，默认读取/检索只使用当前活动版本。
 
 入库先准备新版本，全部向量写入并 flush 后才切换 MongoDB 活动指针；
@@ -51,12 +57,14 @@ HTTP 的普通进程不会随云电脑重启自动恢复，重启后执行 start
 
 ## MCP 与 CLI
 
+当前 WorkBuddy 只连接一个 MCP server：`knowledge-distillation` / `ckp-mcp.sh`，共 30 个工具。下述脚本命令和云端路径是历史专项验证方法，不是 WorkBuddy 需要配置的额外 MCP server。
+
 `cloud.mcp.example.json` 提供云端进程使用的绝对路径配置。它适用于云电脑内的兼容 MCP 客户端，
 不是在 Mac 上直接执行云端路径的远程连接配置。
 
-- `ckp-mcp.sh`：最新蒸馏 MCP，原有 21 个工具。
-- `rag-mcp.sh`：单独的开发 RAG MCP，仅一个工作流工具 `rag_knowledge`，不改变蒸馏工具集。
-- `ai-generate-solution-mcp.sh`：可选方案生成 Agent；未加入默认 MCP 配置。
+- `ckp-mcp.sh`：唯一主 MCP；1.2.1已验收30工具，1.3.0共31工具，WorkBuddy已通过OA正向分类入库和检索筛选验收。
+- `rag-mcp.sh`：历史独立 RAG 专项开发入口，不用于当前 WorkBuddy MCP 配置。
+- `ai-generate-solution-mcp.sh`：历史独立方案生成专项入口，不用于当前 WorkBuddy MCP 配置。
 
 ```bash
 cd /workspace/knowledge-distillation-cloud
@@ -111,12 +119,12 @@ KD_EMBEDDING_MODE=local ./dev-services.sh start
 
 源码中原有硬编码 OCR 凭据已清除，不调用 OCR；建议更换原先硬编码的凭据。
 `.env`、`.env.vendor`、客户 MD/JSON、归档、数据库和日志不进入代码提交。
-公司文件服务适配器保留，但默认使用本机归档，尚未验证公司文件服务与保护图资产。
+当前 source 工作树使用本机 `local_versioned_store` 适配器。历史云端交付中的文件服务代码不表示真实公司 file server 已接通；公司服务、remote auth 和生产发布尚未实现。
 
 ## 本次验证与复现
 
-2026-10-22：99 项自动化测试通过；pip check 通过。
-最新蒸馏 MCP + 独立 RAG MCP + 真实数据库通过完整流程及失败路径检查。
+历史云端运行记录：99 项自动化测试和当时的独立 RAG + 数据库流程检查通过。旧源工作树的阶段性回归曾为112项；已验收1.2.1主链自动化套件125项通过。协议预检确认单 MCP 30 工具、空白知识列表和路径脱敏；真实 Qwen 请求返回 1024 维。
+WorkBuddy 2026-10-22 已完成1.2.1主OA发布、检索、图形资产读取和目录复测；发布任务65/65 verified且重复调用复用同一任务。1.3.0产品线/领域catalog恢复待WorkBuddy验收；撤回仍未做黑盒验证。
 合成 Word 和合成模型草稿用于验证，不代表真实多模态模型已完成蒸馏。
 交付的 9 份 MD/JSON 中 7 份通过契约与入库/检索/回读检查；2 份旧路由拒绝并保留原样。
 
@@ -132,8 +140,7 @@ KD_EMBEDDING_MODE=local ./dev-services.sh start
 `/workspace/cloud-setup/knowledge-distillation/reports/` 中的 merged-tests.log、cloud-e2e.log、
 delivery-samples.log、http-check.log、model-preflight.json。
 
-尚未通过：本机 BGE 权重安装及真实语义向量、Codex GPT-6 luna 的客户端实测、真实 Word 图像模型蒸馏、公司文件服务、
-正式审核发布及多人权限。不得把测试向量的命中解释为检索质量验收。
+生产能力尚未实现：公司文件服务、remote auth、生产发布和生产多人权限。旧记录中的 BGE 权重与模型调用阻塞是当时状态，不覆盖上方当前 Qwen 1024 维和黑盒验收状态。不得把本地结果或 fixture 命中解释为生产检索质量验收。
 
 ## 重建环境
 

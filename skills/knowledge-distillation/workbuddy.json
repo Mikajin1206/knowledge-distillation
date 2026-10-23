@@ -1,6 +1,6 @@
 {
   "display_name": "Knowledge Distillation",
   "display_name_en": "Knowledge Distillation",
-  "description_zh": "用自然语言引导上传项目原件，并从关键 Word 文件生成带来源和质量评分的知识草稿。",
-  "description_en": "Guides original project file uploads and produces sourced, quality-scored knowledge drafts from selected Word documents."
+  "description_zh": "用自然语言引导上传项目原件、从指定 Word 生成知识草稿，并通过本地 RAG 开发流程检索、审核和发布知识。",
+  "description_en": "Guides original project file uploads, sourced drafts from selected Word documents, and local RAG development workflows for retrieval, review, and publication."
 }

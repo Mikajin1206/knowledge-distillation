@@ -4,16 +4,20 @@
 
 [简体中文](README.zh-CN.md) · [English](README.md)
 
-**Knowledge Distillation** is a local-first workflow for turning selected Word documents into traceable project knowledge drafts. It stores project originals, guides a client-side model through lifecycle-wide evidence, and exports Markdown with source metadata and a verifiable content hash.
+**Knowledge Distillation** is a local-first workflow for turning explicitly selected Word documents into traceable project knowledge drafts. The 1.2.1 release was accepted through WorkBuddy with 30 tools. The restored 1.3.0 implementation adds `metadata_catalog` on the same stdio MCP service, for 31 tools total; WorkBuddy verified the OA product/domain metadata path through revision, review, publish, and filtered retrieval. The full project test suite passes (138 tests). The review remains local development evidence, not business-content acceptance or production deployment.
 
-The project is designed for WorkBuddy and compatible stdio MCP clients. Its current storage adapter is local; company file-server integration and RAG publishing are separate deployment work.
+RAG uses the six lifecycle stages in `templates/蒸馏规范/阶段材料清单.md` as its primary classification. The restored 1.3.0 implementation adds project-manager-selected product line (`products`, one string) and related domains (`domain`, a list) as independent filter dimensions. These values come from the metadata catalog, never from model inference; stage remains an orthogonal primary classification and stays out of Markdown frontmatter.
+
+The project is designed for WorkBuddy and compatible stdio MCP clients. Local development includes review records, asynchronous publication tasks, chunk read-back verification, and versioned diagram JSON storage and retrieval. The storage adapter is `local_versioned_store`, and the identity scope is `local_development`; company file-server integration, remote authentication, and production publishing are not implemented.
 
 ## Developer documentation
 
 The current product requirements, implementation handoff, and downstream acceptance criteria are available in Chinese:
 
 - [Product requirements](docs/01-%E9%9C%80%E6%B1%82%E8%A7%84%E6%A0%BC.md)
+- [Product iteration board (single development task board)](docs/%E4%BA%A7%E5%93%81%E8%BF%AD%E4%BB%A3%E7%9C%8B%E6%9D%BF.md)
 - [Current implementation and RAG handoff contract](docs/05-%E4%B8%8A%E4%BC%A0%E8%92%B8%E9%A6%8F%E4%B8%8EMD%E4%BA%A7%E5%87%BA%E4%BA%A4%E6%8E%A5%E6%96%87%E6%A1%A3.md)
+- [Single-MCP local RAG development and black-box acceptance](docs/07-%E5%8D%95MCP%E6%9C%AC%E5%9C%B0RAG%E5%BC%80%E5%8F%91%E4%B8%8E%E9%BB%91%E7%9B%92%E9%AA%8C%E6%94%B6.md)
 - [Downstream development and acceptance standards](docs/%E4%B8%8B%E6%B8%B8%E5%BC%80%E5%8F%91%E9%A1%BB%E7%9F%A5%E4%B8%8E%E9%AA%8C%E6%94%B6%E6%A0%87%E5%87%86.md)
 
 Historical test reports, process logs, customer files, and local configuration are intentionally excluded from this public repository.
@@ -26,9 +30,9 @@ Historical test reports, process logs, customer files, and local configuration a
 - Excludes covers, tables of contents, audience notes, revision history, legends, headers, footers, and unrelated decorative images from the knowledge draft.
 - Records source versions, missing evidence, human-provided context, and a configurable quality score. A low score is disclosed and does not prevent draft export.
 - Exports a Markdown draft and JSON sidecar. The draft carries a SHA-256 hash that can be checked independently.
-- Marks every Markdown section with an explicit routing ID: `body`, `metadata`, `audit`, or `exclude`. The routing parser uses those markers instead of guessing from heading text and fails closed when a marker is missing or invalid. This prepares a clean RAG handoff; approval and publishing are not implemented.
+- Marks every Markdown section with an explicit routing ID: `body` or `exclude`. The routing parser uses those markers instead of guessing from heading text and fails closed when a marker is missing, invalid, duplicated, or uses a legacy route. Sources, quality evidence, and review/publishing records remain in the sidecar and service records.
 
-## Section routing for future RAG
+## Section routing
 
 Every `##` through `######` heading carries a stable section ID and route, for example:
 
@@ -36,7 +40,7 @@ Every `##` through `######` heading carries a stable section ID and route, for e
 ## Procurement workflow <!-- kd-section id=procurement_workflow rag=body -->
 ```
 
-`body` becomes retrieval text, `metadata` becomes structured metadata, `audit` is retained for audit only, and `exclude` is omitted from retrieval output. The parser does not infer a route from heading wording. Missing, malformed, or duplicate markers make the routing manifest invalid and return no retrieval text. The HTML comments are routing metadata and are removed from the extracted retrieval text. This is a preparation contract; formal RAG publishing is not implemented.
+`body` becomes retrieval text and `exclude` is omitted. The parser does not infer a route from heading wording. Missing, malformed, duplicate, or legacy `metadata`/`audit` markers make the routing manifest invalid and return no retrieval text. The HTML comments are routing metadata and are removed from extracted retrieval text.
 
 ## Scope and data boundary
 
@@ -46,9 +50,9 @@ Originals and distilled knowledge have separate roles:
 
 1. **Original library:** retained source files and metadata. The included adapter stores these locally under `data/`.
 2. **Knowledge drafts:** selected Word materials transformed into Markdown and a JSON sidecar under `output/distilled/`.
-3. **RAG:** no automatic publishing is performed. Exported documents remain drafts until a separate review and publishing workflow accepts them.
+3. **Local RAG development:** an explicitly requested local workflow can review and publish a specific knowledge revision, verify chunk read-back, search/read published knowledge, retrieve versioned diagram JSON, and withdraw a version. This is a development sandbox and does not establish production publication.
 
-The local adapter is intended for development and single-machine use. It is not a company file server, shared multi-user repository, backup system, or production authorization boundary. Keep `data/`, `output/`, and `tmp/` private and out of version control.
+The local adapters are intended for development and single-machine use. `CKP_LOCAL_ACTOR` and `CKP_REVIEWER_IDS` bind a local development identity with `local_development` scope; they are not production authentication. The adapters are not a company file server, shared multi-user repository, backup system, or production authorization boundary. Keep `data/`, `output/`, and `tmp/` private and out of version control.
 
 ## Requirements
 
@@ -102,7 +106,9 @@ Use the included [`knowledge-distillation.mcp.example.json`](knowledge-distillat
 
 The Skill is in [`skills/knowledge-distillation/`](skills/knowledge-distillation/). Install that directory using the Skill installation mechanism provided by your client. The Skill guides the user through project selection, original upload, Word selection, lifecycle-stage distillation, image handling, scoring, export, and cleanup. It also instructs the model not to enumerate unrelated local files or bypass the MCP workflow.
 
-The MCP server exposes a consolidated workflow for project and original-file management, distillation guidance and materials, Word content and image delivery, quality-report scaffolding, draft submission/export/verification, and task cleanup. Tool names and schemas are defined in `src/ckp/mcp_server.py`; the server's instructions describe the required call order.
+Legacy `knowledge-rag-development` and `ai-generate-solution` modules remain for internal development compatibility only and are not separately registered as external MCP servers. The solution-generation entry is inactive; clients can use knowledge returned by the primary MCP in their own generation workflow.
+
+The verified 1.2.1 MCP release exposed 30 tools. The 1.3.0 single MCP server exposes 31 tools, adding `metadata_catalog` to that set: 21 project, original-file, Word distillation, draft, and task tools plus `knowledge_status`, `submit_for_review`, `record_review`, `publish_knowledge`, `get_publish_task`, `search_knowledge`, `read_knowledge`, `get_asset`, and `withdraw_knowledge`. WorkBuddy verified the OA product/domain metadata flow through review, publish, and positive/negative filtered retrieval; project tests pass (138 tests). WorkBuddy withdrawal and several negative-input cases remain untested. Tool names and schemas are defined in `src/ckp/mcp_server.py` and `src/ckp/knowledge_tools.py`.
 
 ## Image handling
 
@@ -117,7 +123,7 @@ Scoring weights are maintained in [`templates/蒸馏规范/评分权重.json`](t
 - The MCP service can read files explicitly selected by its client. Configure it only for trusted local users and clients.
 - Keep the data directory on a protected local volume. It contains uploaded originals, metadata, and task records.
 - Set `CKP_DATA` and `CKP_OUTPUT` to private locations when running the service. Do not place confidential originals, generated drafts, databases, logs, or credentials in a public repository.
-- This local implementation does not provide centralized authentication, multi-user access control, remote transport, or company file-server authorization.
+- Only local development identity and scope are implemented. Centralized or remote authentication, production multi-user authorization, and company file-server integration are not implemented.
 - Do not commit real project files or generated customer-specific knowledge.
 
 ## Project layout
@@ -137,7 +143,7 @@ Runtime data (`data/`, `output/`, `tmp/`), Python environments, caches, and loca
 
 - Only Word documents can be distilled. Excel, PowerPoint, PDF, and standalone images are stored as originals but not parsed or passed to the model.
 - The local content-addressed storage adapter is single-machine and SQLite-backed.
-- Export creates a draft; there is no approval state machine or automatic RAG integration.
+- Export creates an explicit local file deliverable. Local review and RAG publication are available only in the development sandbox; company file-server adapters, remote authorization, and production publishing are not implemented.
 - Image understanding depends on the connected client's multimodal model and its ability to consume MCP image content.
 
 ## License

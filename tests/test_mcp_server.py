@@ -41,6 +41,7 @@ class McpServerEndToEnd(unittest.TestCase):
             [str(LAUNCHER)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, env=self.env, cwd=str(REPO))
         self.next_id = 0
+        self.notifications = []
 
     def tearDown(self):
         try:
@@ -65,9 +66,14 @@ class McpServerEndToEnd(unittest.TestCase):
         if params is not None:
             request["params"] = params
         self._send(request)
-        line = self.proc.stdout.readline()
-        self.assertTrue(line, msg=f"服务端无响应: {method}")
-        return json.loads(line)
+        while True:
+            line = self.proc.stdout.readline()
+            self.assertTrue(line, msg=f"服务端无响应: {method}")
+            response = json.loads(line)
+            if 'id' in response:
+                self.assertEqual(self.next_id, response['id'])
+                return response
+            self.notifications.append(response)
 
     def _call(self, tool: str, arguments: dict) -> dict:
         response = self._request("tools/call", {"name": tool, "arguments": arguments})
@@ -94,7 +100,7 @@ class McpServerEndToEnd(unittest.TestCase):
             "clientInfo": {"name": "ckp-e2e", "version": "0"}})
         server_info = init["result"]["serverInfo"]
         self.assertEqual("Knowledge Distillation", server_info["name"])
-        self.assertEqual("1.1.1", server_info["version"])
+        self.assertEqual("1.3.0", server_info["version"])
         instructions = init["result"].get("instructions", "")
         self.assertIn("distill_word_content", instructions)
         self.assertIn("distill_word_image", instructions)
@@ -111,39 +117,71 @@ class McpServerEndToEnd(unittest.TestCase):
         self.assertIn("若确认是不同项目，保留项目经理提供的新名称", instructions)
         self.assertIn("项目名称未提供或项目归属未确认前不得上传", instructions)
         self.assertIn("项目名称未提供或项目归属未确认前不得上传", instructions)
+        self.assertIn("足够时直接回答，不调用 read_knowledge", instructions)
+        self.assertIn("命中少或分数低本身不是读全文理由", instructions)
+        self.assertIn("完整还原须保留节点、边、条件、方向、分组及 unresolved_items", instructions)
         self._send({"jsonrpc": "2.0", "method": "notifications/initialized"})
         # 2 工具清单
         tools = self._request("tools/list")["result"]["tools"]
+        tool_specs = {item["name"]: item for item in tools}
         names = {tool["name"] for tool in tools}
         schemas = {tool["name"]: tool.get("inputSchema", {}) for tool in tools}
-        expected = {"project_create", "project_list", "upload_original", "file_list", "file_read_version",
+        expected = {"project_create", "project_list", "metadata_catalog", "upload_original", "file_list", "file_read_version",
                     "distill_stages", "distill_start", "distill_attach", "distill_gap",
                     "distill_input", "distill_guidance", "distill_material", "distill_show",
                     "distill_quality_report_template",
                     "distill_word_content", "distill_word_image",
                     "distill_close", "draft_submit", "draft_show", "draft_export",
-                    "draft_verify"}
-        self.assertTrue(expected <= names, msg=f"缺少工具: {expected - names}")
+                    "draft_verify", "knowledge_status", "submit_for_review", "record_review",
+                    "publish_knowledge", "get_publish_task", "search_knowledge",
+                    "read_knowledge", "get_asset", "withdraw_knowledge"}
+        self.assertEqual(expected, names)
+        self.assertNotIn('ctx', schemas['distill_word_image'].get('properties', {}))
+        self.assertNotIn('ctx', schemas['get_publish_task'].get('properties', {}))
+        self.assertEqual(20, schemas['get_publish_task']['properties']['wait_seconds']['default'])
         self.assertIn("quality_report", schemas["draft_submit"].get("properties", {}))
-        self.assertEqual(30, schemas["distill_word_content"]["properties"]["limit"]["default"])
+        self.assertIn("name", schemas["project_create"].get("required", []))
+        self.assertIn("path", schemas["upload_original"].get("required", []))
+        self.assertIn("project", schemas["upload_original"].get("required", []))
+        self.assertEqual(60, schemas["distill_word_content"]["properties"]["limit"]["default"])
+        self.assertIn("同一修订合并 section_ids", tool_specs["read_knowledge"]["description"])
+        self.assertIn("protected_asset_refs", tool_specs["get_asset"]["description"])
+        self.assertIn("section_ids 互斥", tool_specs["read_knowledge"]["description"])
+        self.assertIn("section_id", schemas["get_asset"].get("required", []))
+        self.assertIn("section_id 与 asset_id 必须来自同一相关命中章节", tool_specs["get_asset"]["description"])
         preflight = self._call("distill_stages", {})
         self.assertEqual(6, len(preflight["stages"]))
         info = preflight["server_info"]
-        self.assertEqual("1.1.1", info["server_version"])
+        self.assertEqual("1.3.0", info["server_version"])
         self.assertEqual("ckp-office-inspector-v0.3", info["parser_version"])
         self.assertEqual("ckp-emfplus-bitmap-lo-fallback-v6", info["image_renderer_version"])
         self.assertEqual(["svg", "emf", "wmf", "bmp", "tif", "tiff"],
                          info["image_formats_converted_to_png"])
         self.assertFalse(info["ocr"])
         # 3 业务流
+        missing_name = self._call_expect_error("project_create", {"name": ""})
+        self.assertIn("项目名称不能为空", missing_name)
+        empty_projects = self._request(
+            "tools/call", {"name": "project_list", "arguments": {}})["result"]
+        self.assertEqual([], empty_projects.get("structuredContent", {}).get("result", []))
+        self.assertIn("未找到项目（0 项）", empty_projects["content"][0]["text"])
         project = self._unwrap(self._call(
             "project_create", {"name": "MCP演示", "owner": "张三"}))["project_id"]
+        catalog = self._call("metadata_catalog", {"product": "致远 OA"})
+        self.assertEqual(["办公协同"], catalog["domains"])
         project_response = self._request(
             "tools/call", {"name": "project_list", "arguments": {}})["result"]
         projects = project_response.get("structuredContent", {}).get("result", [])
         self.assertTrue(any(item["project_id"] == project and item["name"] == "MCP演示"
                             for item in projects))
         src = write_minimal_docx(self.tmp / "材料.docx", "# 需求纪要\n关键规则：示例。")
+        missing_project = self._call_expect_error(
+            "upload_original", {"path": str(src)})
+        self.assertIn("project", missing_project)
+        empty_files = self._request(
+            "tools/call", {"name": "file_list", "arguments": {}})["result"]
+        self.assertEqual([], empty_files.get("structuredContent", {}).get("result", []))
+        self.assertIn("未找到文件（0 个）", empty_files["content"][0]["text"])
         upload = self._unwrap(self._call(
             "upload_original", {"path": str(src), "project": project,
                                 "uploader": "李四", "stage": "调研与需求",
@@ -163,6 +201,10 @@ class McpServerEndToEnd(unittest.TestCase):
         self._call("distill_attach", {"task_id": task_id, "file_id": file_id})
         guidance = self._call("distill_guidance", {"task_id": task_id})
         self.assertEqual("distill-rules-v0.10", guidance["rules_version"])
+        self.assertEqual(["立项与范围", "调研与需求", "方案与设计", "实施与变更", "测试与验收", "运维与改进"],
+                         guidance["stage_options"])
+        self.assertEqual(["方案设计", "调研报告", "概要设计", "开发功能说明书"],
+                         guidance["document_type_options"])
         self.assertEqual("distill-score-v2", guidance["score_policy"]["version"])
         material = self._call("distill_material", {"task_id": task_id, "file_id": file_id})
         self.assertTrue(material["verified"])
@@ -182,13 +224,31 @@ class McpServerEndToEnd(unittest.TestCase):
              "body_md": BODY, "model": "mcp-e2e-stub",
              "sources": [{"version_id": version_id, "location": "全文",
                           "supports": "示例结论"}],
-             "quality_report": {"asset_reviews": [], "flowcharts": [], "table_checks": []}}))
+             "quality_report": {"asset_reviews": [], "flowcharts": [], "table_checks": []},
+             "products": "致远 OA", "domain": ["办公协同"]}))
         knowledge_id = draft["knowledge_id"]
         self.assertEqual("draft", draft["status"])
+        self.assertNotIn('body_md', self._call('draft_show', {'knowledge_id': knowledge_id}))
+        self.assertEqual(BODY, self._call('draft_show', {'knowledge_id': knowledge_id, 'include_body': True})['body_md'])
         exported = self._call("draft_export", {"knowledge_id": knowledge_id})
         self.assertTrue(exported["verify"]["match"], msg=str(exported["verify"]))
+        self.assertTrue(exported["verify_sidecar"]["match"], msg=str(exported["verify_sidecar"]))
+        self.assertEqual("致远 OA", exported["frontmatter"]["products"])
+        self.assertEqual(["办公协同"], exported["frontmatter"]["domain"])
         verified = self._call("draft_verify", {"md_path": exported["md"]})
         self.assertTrue(verified["match"])
+        pair_verified = self._call("draft_verify", {
+            "md_path": exported["md"], "sidecar_path": exported["json"]})
+        self.assertTrue(pair_verified["match"])
+        sidecar_path = Path(exported["json"])
+        original_sidecar = sidecar_path.read_bytes()
+        tampered_sidecar = json.loads(original_sidecar)
+        tampered_sidecar["title"] = "tampered"
+        sidecar_path.write_text(json.dumps(tampered_sidecar), encoding="utf-8")
+        tampered_check = self._call("draft_verify", {
+            "md_path": exported["md"], "sidecar_path": exported["json"]})
+        self.assertFalse(tampered_check["match"])
+        sidecar_path.write_bytes(original_sidecar)
         self._call("distill_close", {"task_id": task_id})
         self.assertFalse((REPO / "tmp" / "distill" / task_id).exists())
         # 4 错误路径：业务错误以 isError 返回，不是协议错误
@@ -264,8 +324,18 @@ class McpServerEndToEnd(unittest.TestCase):
         self.assertEqual([], next_page["assets"])
         image_result = self._request("tools/call", {"name": "distill_word_image", "arguments": {
             "task_id": task_id, "file_id": file_id,
-            "asset_id": scan["assets"][0]["asset_id"]}})["result"]
+            "asset_id": scan["assets"][0]["asset_id"]},
+            "_meta": {"progressToken": "image-progress"}})["result"]
         self.assertEqual("image", image_result["content"][0]["type"])
+        image_context = json.loads(image_result['content'][1]['text'])
+        self.assertEqual('minimal.docx', image_context['filename'])
+        self.assertEqual(1, image_context['image_position'])
+        self.assertFalse(image_context['reviewed_by_model'])
+        self.assertNotIn('local_path', image_result['content'][1]['text'])
+        progress = [n['params'] for n in self.notifications if n['method'] == 'notifications/progress']
+        self.assertEqual([0, 1], [p['progress'] for p in progress])
+        self.assertTrue(all(p['progressToken'] == 'image-progress' for p in progress))
+        self.assertIn('minimal.docx', progress[-1]['message'])
         self.assertEqual("image/png", image_result["content"][0]["mimeType"])
         self._call("distill_close", {"task_id": task_id})
 

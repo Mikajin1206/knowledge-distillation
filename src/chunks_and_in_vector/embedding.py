@@ -14,6 +14,7 @@ from typing import List, Optional
 from dotenv import load_dotenv
 from openai import OpenAI, AsyncOpenAI
 from langchain_core.embeddings import Embeddings
+from .chunking import split_section, validate_embedding_texts
 
 logger = logging.getLogger(__name__)
 
@@ -62,10 +63,15 @@ class EmbeddingModel(Embeddings):
         self._aclient = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url, timeout=timeout)
         logger.info("向量化模型初始化: model=%s base_url=%s", self.model, self.base_url)
 
+    def split_section(self, heading: str, content: str):
+        """Split one section using the conservative UTF-8 byte-bound policy."""
+        return split_section(heading, content)
+
     # ---------- 同步 ----------
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         if not texts:
             return []
+        validate_embedding_texts(texts)
         out: List[List[float]] = []
         for i in range(0, len(texts), self.batch_size):
             batch = texts[i : i + self.batch_size]

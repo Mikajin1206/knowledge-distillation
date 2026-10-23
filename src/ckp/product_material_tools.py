@@ -17,7 +17,7 @@ def register_product_material_tools(server, data_dir, repo_root, tool_errors):
     @tool_errors
     def product_material_ingest(path: str, category: str, product: str,
                                 domain: list[str]) -> dict:
-        """将用户明确指定的单个 Word 原件直接解析、切片并写入本地开发 RAG。category 为“产品手册”或“培训资料”；product 必须单选，domain 从该产品目录中选择至少一个。与项目无关；保留原件，不做蒸馏、草稿或审核。重复内容幂等；同名新内容建立新修订。返回原件哈希、分节/切片数、逐块读回核验数；包含图片时明确报告未做 OCR/图像语义入库。"""
+        """将用户明确指定的单个 Word 原件直接解析、切片并写入本地开发 RAG。category 为“产品手册”或“培训资料”；product 必须单选，domain 从该产品目录中选择至少一个。与项目无关；保留原件，不做蒸馏、草稿或审核。重复内容幂等；同名新内容建立新修订。返回原件哈希、分节/切片数、逐块读回核验数和未做 OCR 的图片数。state=unchanged 时这些计数来自首次成功入库记录；verification_basis=original_ingest 且 readback_performed_this_call=false 表示本次未重新读回核验。"""
         with session() as service:
             return service.ingest(path, category, product, domain)
 

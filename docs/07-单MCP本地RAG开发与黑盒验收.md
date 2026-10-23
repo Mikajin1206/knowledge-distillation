@@ -121,6 +121,8 @@ Qwen 当前没有交付精确 tokenizer，因此按 UTF-8 字节边界切分：�
 
 WorkBuddy 刷新至 MCP 1.4.0 后，串行完成该 Word 的黑盒验收：清单确认 `NCC / 产品手册 / 财务会计`；重复入库返回 `unchanged`，材料 ID、修订号、哈希和 499 个已索引切片保持一致；按产品与领域检索得到 5 条结果，最高命中为“应用场景 / 4.2 总账日常核算（凭证管理）/ 4.2.1 业务描述”；使用命中三元组读取同版分节成功；原件导出文件名、大小和 SHA-256 一致，`verified=true`。导出副本已删除。图片 OCR 不在本次验收范围，原件中的 79 张嵌入图片仍按既定边界不做 OCR 或图像语义索引。K15 验收完成。
 
+补验发现 WorkBuddy 对 `unchanged` 分支只能返回 `indexed_chunks`，未给出分节数、核验依据和图片状态。服务已补齐该分支的 `sections/chunks/verified_chunks/embedded_images_not_ocr_processed`，并返回 `verification_basis=original_ingest`、`readback_performed_this_call=false`，明确这些核验计数来自首次成功入库且本次没有重读 Milvus。基于同一指定 Word 串行复验一次：返回 `unchanged`、83 节、499 切片、499 个首次入库核验块、79 张未 OCR 图片，material/version/revision/hash 与既有清单一致；未创建新修订。K15.3 完成。
+
 | 场景 | 问题形态 | 预期调用 | 通过条件 |
 |---|---|---|---|
 | 分节足够 | 询问一个可由单个命中章节直接回答的具体事实 | `search_knowledge` | 直接基于命中分节回答；不调用 `read_knowledge`、`get_asset` |

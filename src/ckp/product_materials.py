@@ -216,11 +216,23 @@ class ProductMaterials:
                     {"_id": record_id, "state": "ready", "version_id": current["version_id"],
                      "source_sha256": sha256}) if active_head else None)
                 if indexed_record:
+                    indexed_chunks = len(indexed_record.get("chunk_ids", []))
+                    section_count = len(indexed_record.get("sections", [])) or int(current["section_count"])
+                    # A record becomes ready only after the initial write has
+                    # passed the per-chunk Milvus readback check below. Preserve
+                    # that result in the idempotent response without claiming
+                    # that this call performed a fresh readback.
+                    verified_chunks = int(indexed_record.get("verified_chunks", indexed_chunks))
                     return {"state": "unchanged", "material_id": existing["material_id"],
-                            "revision": current["revision"], "source_sha256": sha256,
+                            "revision": current["revision"], "version_id": current["version_id"],
+                            "source_sha256": sha256,
                             "category": category, "products": product, "domain": domains,
-                            "active": True,
-                            "indexed_chunks": self._active_chunk_count(existing["material_id"], current["revision"]),
+                            "active": True, "sections": section_count,
+                            "chunks": indexed_chunks, "indexed_chunks": indexed_chunks,
+                            "verified_chunks": verified_chunks,
+                            "verification_basis": "original_ingest",
+                            "readback_performed_this_call": False,
+                            "embedded_images_not_ocr_processed": int(indexed_record.get("image_count", current.get("image_count", 0))),
                             "embedding_mode": self.rag.mode}
 
         duplicate = db.rowdict(self.store.conn.execute(
@@ -315,7 +327,9 @@ class ProductMaterials:
                             or json.loads(row["metadata"]) != expected_doc.metadata):
                         raise ValueError("产品资料向量正文或元数据读回不一致；未激活此修订")
                 verified += len(batch)
-            records.update_one({"_id": record_id}, {"$set": {"state": "ready"}})
+            records.update_one({"_id": record_id}, {"$set": {
+                "state": "ready", "verified_chunks": verified,
+                "section_count": len(sections), "chunk_count": len(chunks)}})
             new_head = {"_id": material_id, "record_id": record_id, "revision": revision,
                         "active": True, "collection": collection}
             if head:

@@ -20,6 +20,7 @@ PRODUCT_MATERIAL_COLLECTIONS = {
     "培训资料": "cb_training_materials",
 }
 PRODUCT_MATERIAL_CATEGORIES = tuple(PRODUCT_MATERIAL_COLLECTIONS)
+PRODUCT_MATERIAL_INGEST_CATEGORIES = ("产品手册",)
 
 # These are client suggestions only. knowledge_type remains a free-form
 # document attribute and does not select a RAG collection.
@@ -46,4 +47,11 @@ def validate_product_material_category(value: object) -> str:
         raise ValueError(
             f"未知产品资料类别 {normalized!r}；可选值：{'、'.join(PRODUCT_MATERIAL_CATEGORIES)}"
         )
+    return normalized
+
+
+def validate_product_material_ingest_category(value: object) -> str:
+    normalized = validate_product_material_category(value)
+    if normalized not in PRODUCT_MATERIAL_INGEST_CATEGORIES:
+        raise ValueError("当前版本仅接受规范产品手册；培训资料暂不支持，已列入后续迭代")
     return normalized

@@ -100,7 +100,7 @@ class McpServerEndToEnd(unittest.TestCase):
             "clientInfo": {"name": "ckp-e2e", "version": "0"}})
         server_info = init["result"]["serverInfo"]
         self.assertEqual("Knowledge Distillation", server_info["name"])
-        self.assertEqual("1.4.0", server_info["version"])
+        self.assertEqual("1.5.5", server_info["version"])
         instructions = init["result"].get("instructions", "")
         self.assertIn("distill_word_content", instructions)
         self.assertIn("distill_word_image", instructions)
@@ -138,7 +138,8 @@ class McpServerEndToEnd(unittest.TestCase):
                     "read_knowledge", "get_asset", "withdraw_knowledge"}
         expected.update({"product_material_ingest", "product_material_list",
                          "search_product_materials", "read_product_material",
-                         "product_material_export_original", "withdraw_product_material"})
+                         "read_product_material_image", "product_material_export_original",
+                         "withdraw_product_material"})
         self.assertEqual(expected, names)
         self.assertNotIn('ctx', schemas['distill_word_image'].get('properties', {}))
         self.assertNotIn('ctx', schemas['get_publish_task'].get('properties', {}))
@@ -156,9 +157,9 @@ class McpServerEndToEnd(unittest.TestCase):
         preflight = self._call("distill_stages", {})
         self.assertEqual(6, len(preflight["stages"]))
         info = preflight["server_info"]
-        self.assertEqual("1.4.0", info["server_version"])
+        self.assertEqual("1.5.5", info["server_version"])
         self.assertEqual("ckp-office-inspector-v0.4", info["parser_version"])
-        self.assertEqual("ckp-emfplus-bitmap-lo-fallback-v6", info["image_renderer_version"])
+        self.assertEqual("ckp-emf-lo-primary-frame-guard-bitmap-fallback-v8", info["image_renderer_version"])
         self.assertEqual(["svg", "emf", "wmf", "bmp", "tif", "tiff"],
                          info["image_formats_converted_to_png"])
         self.assertFalse(info["ocr"])
@@ -167,7 +168,14 @@ class McpServerEndToEnd(unittest.TestCase):
         # fresh data directory without initializing persistent storage.
         self.assertEqual(["category", "domain", "path", "product"],
                          sorted(schemas["product_material_ingest"]["required"]))
+        training_rejection = self._call_expect_error("product_material_ingest", {
+            "path": "/path/not/read.docx", "category": "培训资料",
+            "product": "NCC", "domain": ["财务会计"],
+        })
+        self.assertIn("当前版本仅接受规范产品手册", training_rejection)
         self.assertIn("full_document", schemas["read_product_material"]["properties"])
+        self.assertEqual(["figure_id", "material_id", "revision", "source_sha256"],
+                         sorted(schemas["read_product_material_image"]["required"]))
         product_materials = self._call("product_material_list", {})
         self.assertEqual(0, product_materials["count"])
         self.assertEqual([], product_materials["materials"])
@@ -183,6 +191,7 @@ class McpServerEndToEnd(unittest.TestCase):
             "project_create", {"name": "MCP演示", "owner": "张三"}))["project_id"]
         catalog = self._call("metadata_catalog", {"product": "致远 OA"})
         self.assertEqual(["办公协同"], catalog["domains"])
+        self.assertEqual(["产品手册"], info["classification"]["product_material_categories"])
         project_response = self._request(
             "tools/call", {"name": "project_list", "arguments": {}})["result"]
         projects = project_response.get("structuredContent", {}).get("result", [])
@@ -309,7 +318,7 @@ class McpServerEndToEnd(unittest.TestCase):
             "task_id": task_id, "file_id": file_id, "offset": 0, "limit": 100})
         self.assertEqual("docx", scan["format"])
         self.assertEqual(2, scan["summary"]["paragraphs"])
-        self.assertEqual("ckp-office-inspector-v0.3", scan["parser_version"])
+        self.assertEqual("ckp-office-inspector-v0.4", scan["parser_version"])
         self.assertEqual(1, len(scan["assets"]))
         self.assertNotIn("manifest_path", scan)
         self.assertNotIn("assets_dir", scan)

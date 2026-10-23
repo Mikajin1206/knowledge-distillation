@@ -26,7 +26,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 from ckp.distill import STAGES, Distill  # noqa: E402
 from ckp.md_render import export_draft, verify_md, verify_sidecar  # noqa: E402
 from ckp.store import Store  # noqa: E402
-from ckp.knowledge_types import PRODUCT_MATERIAL_CATEGORIES  # noqa: E402
+from ckp.knowledge_types import PRODUCT_MATERIAL_INGEST_CATEGORIES  # noqa: E402
 from ckp.product_material_tools import register_product_material_tools  # noqa: E402
 
 from mcp.server.mcpserver import Context, Image, MCPServer  # noqa: E402
@@ -91,7 +91,7 @@ def _split_list(text: str | None) -> list[str]:
 
 server = MCPServer(
     "Knowledge Distillation",
-    version="1.4.0",
+    version="1.5.5",
     instructions=(
         "Knowledge Distillation:先在对话中确认处理意图；用户只说上传/提交/归档时仅保存原件，不解析、不蒸馏、不索引；用户明确提出蒸馏后才可启动任务，且只蒸馏用户明确指定的 Word。默认每份 Word 单独启动一个蒸馏任务并产出一份 MD。多份 Word 请求蒸馏时，提醒项目经理 MCP 支持将明确指定的一组文件合并分析并产出一份知识文件；未明确要求合并时无需等待选择，按逐份处理。“全部蒸馏”表示逐份处理，不代表合并。只有项目经理明确要求指定多份资料合并分析并共同产出一个知识文件时，才将该组材料关联到同一任务并提交一份综合 MD；不得按项目、阶段、主题或相似度自行合并。仅说关键文档但未指明文件时只追问一次具体范围。用户只说处理/整理等无法判断意图时，先询问仅归档还是同时蒸馏并询问文件范围，答复前不调用任何 MCP 工具。不得根据文件名、格式或内容替用户判断蒸馏意图/关键文档。合并稿保留各来源版本与冲突，不静默裁决。已明确上传并蒸馏及范围时不重复询问，先保存原件再蒸馏。只有 .doc/.docx 可蒸馏。项目名称必须由项目经理提供；上传前先调用现有 project_list 检查相同/相近名称并展示候选；由项目经理判断是否同一项目，同一项目沿用清单规范名称并再次确认；若确认是不同项目，保留项目经理提供的新名称；项目名称未提供或项目归属未确认前不得上传；不能从材料推断、自动改名或合并项目。"
         "仅当用户明确提出蒸馏且范围明确时才调用 distill_stages，并记录 server_info.server_version、parser_version、image_renderer_version；缺少版本字段或版本与当前验收基线不符时停止图片验收并报告，不把旧 MCP 结果当作当前代码效果。只说上传/归档时不调用任何蒸馏预检或蒸馏工具。"
@@ -103,11 +103,11 @@ server = MCPServer(
         "用户混选 Word 与非 Word 时，先停止蒸馏并确认是否只用 Word 继续；非 Word 可作为原件保存，但不得读取或交给模型。"
         "排除封面、目录、对象说明、版本记录、正文前说明、图例、页眉页脚和无关装饰；只对核心正文相关图片调用 distill_word_image，语义由客户端多模态模型直接识别，不用 OCR。"
         "MCP 负责用户指定材料的归档、解析/渲染、忠实蒸馏及技术来源追溯；不代项目经理审查或修订文档规范、签署/盖章、文件标识/版本/日期一致性、附件或测试验收材料齐套、方案决策闭环、编码/业务口径一致性，也不核对图像姓名与人员档案。不得主动开展此类审查、生成相关缺陷/待确认项或把它们列为 MCP 测试问题。忠实保留实际读取到的业务陈述，不判断其正确性、完整性或合规性；用户要求此类检查时说明超出 MCP 蒸馏范围。多文件明确合并时，保留来源及直接影响语义的陈述差异，不自行裁决。知识 Markdown 写入业务事实和适用边界；业务事实不因标题层级、表格或清单形式改为元数据。章节路由只使用 body/exclude；来源映射、读取覆盖、模型/规范信息、图片与表格技术证据和审核发布信息写入 sources/quality_report/sidecar，不创建 metadata/audit 正文章节。旧 metadata/audit 标记不自动迁移。"
+        "RAG 问答先 search_knowledge，只用命中正文分节判断证据是否充分；足够时直接回答，不调用 read_knowledge。缺少必要前提、限制或关联步骤时，按精确知识修订和命中分节定向补读；多个命中属于同一修订时先合并 section_ids，避免重复读取。只有整体方案/跨章节关系、冲突核对，或定向补读仍不足时才读全文；命中少或分数低本身不是读全文理由。产品资料使用 search_product_materials，精确图号按映射定位，不依赖向量语义召回。"
         "来源必须绑定任务材料及其版本；服务端可自动补全粗粒度来源并降低来源评分。draft_export 已附正文哈希校验，通常无需再次调用 draft_verify。"
         "只用本 MCP 读取材料和检查导出，不用本机目录枚举/文件搜索、shell、其他 MCP 或 Office 工具。完成后列明每份源 Word 对应的任务及 MD；合并时列出该综合 MD 的全部来源文件。草稿未经项目经理审核，不代表发布或入库；写操作支持 request_id 幂等重试。"
         "本服务为单一 MCP，含本地开发 RAG 工具。stage 六阶段为主分类，knowledge_type 为补充文档类型，products 为项目经理单选产品线、domain 为所选产品线下多选领域；三者保存在 RAG 元数据中。用户明确要求入库时：knowledge_status 预检；对用户确认的知识 revision/content_hash 调用 submit_for_review，用户明确给出审核结论后 record_review，再 publish_knowledge；get_publish_task 返回 published 才报告本地入库完成，必须保留 chunks/verified_chunks。不得自行批准业务内容。"
-        "RAG 问答按需读取顺序：先 search_knowledge，只用命中正文分节及其章节路径、来源和精确 document_ref 判断证据是否充分；足够时直接回答，不调用 read_knowledge。缺少必要前提、限制或关联步骤时，按命中分节的 document_ref（knowledge_id、revision、content_hash）调用 read_knowledge，只补读相关 section_ids；多个命中属于同一修订时先合并分节 ID，避免重复读取。只有问题要求整体方案/跨章节关系、需要核对跨章节冲突，或相关章节补读后证据仍不足时，才对同一修订调用 full_document=true；命中少或分数低本身不是读全文理由。全文返回后只引用回答所需证据。"
-        "只有回答确实需要流程图、系统图的节点/关系/分支细节，或用户要求完整还原时，才从相关命中章节的 protected_asset_refs 取 asset_id，并以同一 knowledge_id、revision、content_hash 及该节 section_id 调用 get_asset。服务会核验 asset_id 确实由指定 body 分节引用。按返回的完整结构核对；完整还原须保留节点、边、条件、方向、分组及 unresolved_items，不得静默截断、按名称猜资产或回退其他版本。普通问答不调用 get_asset。读取失败、资产映射或哈希不符时停止使用并说明缺口。search_knowledge 可按 stage、knowledge_type、products、domain 筛选；用户未限定分类时不自行推断筛选值。发布、读取、资产和撤回都用确切知识版本与哈希。产品资料属于独立逻辑资料库，使用 product_material_ingest 保留并直接解析用户指定的 Word 原件，不关联客户项目、不经过蒸馏与审核；类别只能是产品手册或培训资料，products 单选、domain 由目录校验。产品问题优先调用 search_product_materials，命中充分时直接回答，缺少上下文时按精确 material_id/revision/source_sha256 调用 read_product_material；只有明确需要原件时才导出原始 Word。产品资料搜索和项目档案搜索分别路由，售前是否联合调用由问题意图决定。当前身份与存储是本机单用户开发适配，服务器认证与文件服务迁移另验收。"
+        "只有回答确实需要流程图、系统图的节点/关系/分支细节，或用户要求完整还原时，才从相关命中章节的 protected_asset_refs 取 asset_id，并以同一 knowledge_id、revision、content_hash 及该节 section_id 调用 get_asset。服务会核验 asset_id 确实由指定 body 分节引用。按返回的完整结构核对；完整还原须保留节点、边、条件、方向、分组及 unresolved_items，不得静默截断、按名称猜资产或回退其他版本。普通问答不调用 get_asset。读取失败、资产映射或哈希不符时停止使用并说明缺口。search_knowledge 可按 stage、knowledge_type、products、domain 筛选；用户未限定分类时不自行推断筛选值。发布、读取、资产和撤回都用确切知识版本与哈希。产品资料属于独立逻辑资料库，不关联客户项目、不属于项目生命周期六阶段，也不要求指定 stage；使用 product_material_ingest 保留并直接解析用户指定的 Word 原件，不经过蒸馏与审核；当前仅接受类别为产品手册的规范 Word，培训资料入库必须拒绝并留待后续迭代；products 单选、domain 由目录校验。手册正文只有与唯一内嵌图片一一对应的正式图号（如图5.2-01）才生成独立标记，不分析图片、不保存图片副本；按同一 material_id/revision/source_sha256 和 figure_id 调用 read_product_material_image 从原 Word 取回原图。产品问题优先调用 search_product_materials，命中充分时直接回答，缺少上下文时按精确 material_id/revision/source_sha256 调用 read_product_material；只有明确需要原件时才导出原始 Word。产品资料搜索和项目档案搜索分别路由，售前是否联合调用由问题意图决定。当前身份与存储是本机单用户开发适配，服务器认证与文件服务迁移另验收。"
     ),
 )
 
@@ -121,7 +121,7 @@ def _server_capabilities() -> dict:
                                    MCP_NATIVE_IMAGE_FORMATS, PARSER_VERSION)
     return {
         "server_name": "Knowledge Distillation",
-        "server_version": "1.4.0",
+        "server_version": "1.5.5",
         "parser_version": PARSER_VERSION,
         "image_renderer_version": IMAGE_RENDERER_VERSION,
         "word_formats": [".doc", ".docx"],
@@ -134,7 +134,10 @@ def _server_capabilities() -> dict:
         "progress_notifications": "when_requested_by_client",
         "image_result": "image_and_source_context; returned_is_not_reviewed",
         "classification": {"primary": "stage", "stage_collections": STAGE_COLLECTIONS,
-                           "product_material_categories": list(PRODUCT_MATERIAL_CATEGORIES),
+                           "product_material_categories": list(PRODUCT_MATERIAL_INGEST_CATEGORIES),
+                           "product_materials": {"classification": "independent_product_material_corpus",
+                                                 "uses_lifecycle_stage": False,
+                                                 "categories": list(PRODUCT_MATERIAL_INGEST_CATEGORIES)},
                            "document_type_field": "knowledge_type",
                            "document_type_examples": list(DOCUMENT_TYPE_OPTIONS),
                            "product_field": "products", "product_type": "single_catalog_choice",

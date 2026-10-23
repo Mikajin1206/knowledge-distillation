@@ -3,11 +3,17 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import hashlib
+import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock
 
 from tests._path import *  # noqa: F401,F403
-from ckp.product_materials import ProductMaterials
+from ckp.product_materials import (PRODUCT_MATERIAL_INDEX_VERSION, ProductMaterials,
+                                   _figure_query_id, _figure_references,
+                                   _heading_quality_warnings, _is_toc_style,
+                                   _numbered_heading_level,
+                                   _sections)
 from ckp.office_parser import PARSER_VERSION
 
 
@@ -25,6 +31,196 @@ class _Collection:
 
 
 class ProductMaterialSearchTests(unittest.TestCase):
+    def test_exact_figure_query_uses_figure_mapping_without_vector_search(self):
+        self.assertEqual("图5.2-01", _figure_query_id("图5.2.01"))
+        self.assertIsNone(_figure_query_id("存货核算图5.2-01"))
+
+    def test_word_toc_rows_do_not_create_headings_or_enter_body(self):
+        manifest = {
+            "paragraphs": [
+                {"index": 1, "body_order": 1, "text": "总账管理", "style": "Heading1",
+                 "heading_level": 1},
+                {"index": 2, "body_order": 2, "text": "3.3.2.2 采购结算", "style": "TOC4"},
+                {"index": 3, "body_order": 3, "text": "正文保留该编号和标题原文。"},
+            ], "tables": [], "assets": [],
+        }
+        sections, _ = _sections(manifest, "pm-test", 1)
+        self.assertTrue(_is_toc_style("TOC4"))
+        self.assertTrue(_is_toc_style("目录 2"))
+        self.assertFalse(_is_toc_style("Heading 2"))
+        self.assertEqual(1, len(sections))
+        self.assertEqual(["总账管理"], sections[0]["heading_path"])
+        self.assertEqual("正文保留该编号和标题原文。", sections[0]["text"])
+
+    def test_toc_body_number_mismatch_is_reported_without_rewriting(self):
+        manifest = {"paragraphs": [
+            {"index": 1, "text": "5.3.2.2 采购结算", "style": "TOC4"},
+            {"index": 2, "text": "3.3.2.2 采购结算", "style": "Heading 4",
+             "heading_level": 4},
+        ]}
+        warnings = _heading_quality_warnings(manifest)
+        self.assertEqual(1, len(warnings))
+        self.assertEqual("toc_body_heading_number_mismatch", warnings[0]["code"])
+        self.assertEqual("5.3.2.2", warnings[0]["toc_number"])
+        self.assertEqual("3.3.2.2", warnings[0]["body_number"])
+        self.assertEqual("采购结算", warnings[0]["title"])
+
+    def test_toc_body_matching_number_has_no_warning(self):
+        manifest = {"paragraphs": [
+            {"index": 1, "text": "7.8.12 成本核算", "style": "TOC4"},
+            {"index": 2, "text": "7.8.12 成本核算", "style": "Heading 4",
+             "heading_level": 4},
+        ]}
+        self.assertEqual([], _heading_quality_warnings(manifest))
+
+    def test_toc_entry_without_body_heading_is_reported(self):
+        manifest = {"paragraphs": [
+            {"index": 1, "text": "5.2.4 接口设置", "style": "TOC3"},
+            {"index": 2, "text": "5.2.3 委外加工", "style": "Heading 3",
+             "heading_level": 3},
+        ]}
+        warnings = _heading_quality_warnings(manifest)
+        self.assertEqual(["toc_heading_missing_from_body"], [w["code"] for w in warnings])
+        self.assertEqual(1, warnings[0]["toc_paragraph"])
+
+    def test_toc_body_heading_level_mismatch_is_reported(self):
+        manifest = {"paragraphs": [
+            {"index": 1, "text": "5.2.4 接口设置", "style": "TOC2"},
+            {"index": 2, "text": "5.2.4 接口设置", "style": "Heading 3",
+             "heading_level": 3},
+        ]}
+        warnings = _heading_quality_warnings(manifest)
+        self.assertEqual(["toc_body_heading_level_mismatch"], [w["code"] for w in warnings])
+        self.assertEqual((2, 3), (warnings[0]["toc_level"], warnings[0]["body_level"]))
+
+    def test_toc_body_order_mismatch_is_reported(self):
+        manifest = {"paragraphs": [
+            {"index": 1, "text": "5.2.1 采购", "style": "TOC2"},
+            {"index": 2, "text": "5.2.2 销售", "style": "TOC2"},
+            {"index": 3, "text": "5.2.2 销售", "style": "Heading 2",
+             "heading_level": 2},
+            {"index": 4, "text": "5.2.1 采购", "style": "Heading 2",
+             "heading_level": 2},
+        ]}
+        warnings = _heading_quality_warnings(manifest)
+        self.assertEqual(["toc_body_heading_order_mismatch"], [w["code"] for w in warnings])
+
+    def test_numbered_heading_parent_mismatch_is_reported(self):
+        manifest = {"paragraphs": [
+            {"index": 1, "text": "5.3.2 业务处理", "style": "Heading 3",
+             "heading_level": 3},
+            {"index": 2, "text": "3.3.2.2 多工厂集中销售", "style": "Heading 4",
+             "heading_level": 4},
+        ]}
+        warnings = _heading_quality_warnings(manifest)
+        self.assertEqual(["heading_number_parent_mismatch"], [w["code"] for w in warnings])
+        self.assertEqual("3.3.2", warnings[0]["expected_parent_number"])
+        self.assertEqual("5.3.2", warnings[0]["actual_parent_number"])
+
+    def test_numbered_heading_without_space_is_recognized(self):
+        self.assertEqual(4, _numbered_heading_level("3.3.2.2多工厂集中销售"))
+
+    def test_missing_number_between_siblings_is_reported(self):
+        manifest = {"paragraphs": [
+            {"index": 1, "text": "5.2.1 采购", "style": "Heading 3",
+             "heading_level": 3},
+            {"index": 2, "text": "5.2.3 委外加工", "style": "Heading 3",
+             "heading_level": 3},
+        ]}
+        warnings = _heading_quality_warnings(manifest)
+        self.assertEqual(["heading_number_gap"], [w["code"] for w in warnings])
+        self.assertEqual(["5.2.2"], warnings[0]["missing_numbers"])
+
+    def test_read_image_restores_extension_for_content_addressed_docx(self):
+        with tempfile.TemporaryDirectory(prefix="product-material-image-") as tmp:
+            root = Path(tmp)
+            source_dir = root / "data" / "originals" / "ab"
+            source_dir.mkdir(parents=True)
+            source = source_dir / "source-fixture"
+            with zipfile.ZipFile(source, "w") as archive:
+                archive.writestr("word/_rels/document.xml.rels",
+                    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                    '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image1.png"/>'
+                    '</Relationships>')
+                archive.writestr("word/media/image1.png", b"fixture-png")
+            source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+            source.rename(source_dir / source_hash)
+            data_dir = root / "data"
+            service = ProductMaterials(data_dir, Path(__file__).resolve().parents[1])
+            try:
+                service.store.conn.execute(
+                    "INSERT INTO blobs(sha256,size,rel_path) VALUES(?,?,?)",
+                    (source_hash, (source_dir / source_hash).stat().st_size,
+                     f"originals/ab/{source_hash}"))
+                service.store.conn.execute(
+                    "INSERT INTO product_materials(material_id,category,product,title,current_version_id,active,created_at,updated_at)"
+                    " VALUES(?,?,?,?,?,?,?,?)",
+                    ("pm-fixture", "产品手册", "NCC", "测试手册", "pmv-fixture", 1, "now", "now"))
+                service.store.conn.execute(
+                    "INSERT INTO product_material_versions(version_id,material_id,revision,sha256,size,media_type,filename,"
+                    "domains_json,parser_version,section_count,image_count,state,created_at)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    ("pmv-fixture", "pm-fixture", 1, source_hash,
+                     (source_dir / source_hash).stat().st_size, "application/docx", "测试手册.docx",
+                     '["财务会计"]', PRODUCT_MATERIAL_INDEX_VERSION, 1, 1, "ready", "now"))
+                service.store.conn.commit()
+                records = _Collection([{
+                    "_id": "pm-fixture@1", "state": "ready", "version_id": "pmv-fixture",
+                    "source_sha256": source_hash, "figure_refs": [{
+                        "figure_id": "图5.2-01", "relationship_id": "rId1",
+                        "part": "word/media/image1.png"}],
+                    "sections": [{"figure_ids": ["图5.2-01"], "heading_path": ["5.2"]}],
+                }])
+                service._rag = MagicMock(mongo=MagicMock())
+                service._rag.mongo.get_collection.return_value = records
+                payload, image_format, context = service.read_image(
+                    "pm-fixture", 1, source_hash, "图5.2-01")
+                self.assertEqual(b"fixture-png", payload)
+                self.assertEqual("png", image_format)
+                self.assertEqual(["5.2"], context["heading_path"])
+                self.assertEqual("image/png", context["mime_type"])
+                self.assertTrue(context["hash_verified"])
+            finally:
+                service.close()
+
+    def test_formal_figure_caption_gets_marker_and_exact_image_mapping(self):
+        manifest = {
+            "paragraphs": [
+                {"index": 1, "body_order": 1, "text": "5.2 集成应用", "style": "Heading 2"},
+                {"index": 2, "body_order": 2, "text": "接口图如下："},
+                {"index": 3, "body_order": 4, "text": "图 5.2.01 存货核算功能接口图"},
+                {"index": 4, "body_order": 5, "text": "下一段"},
+            ],
+            "tables": [],
+            "assets": [{"kind": "image", "part": "word/media/image1.png",
+                        "relationship_id": "rId7",
+                        "block_ref": "word/document.xml:paragraph:2:body_order:3"}],
+        }
+        refs, by_order = _figure_references(manifest)
+        sections, chunks = _sections(manifest, "pm-test", 2,
+                                     figure_refs_by_order=by_order)
+        self.assertEqual("图5.2-01", refs[0]["figure_id"])
+        self.assertIn("[[FIGURE_REF: 图5.2-01]]", sections[0]["text"])
+        self.assertEqual(["图5.2-01"], sections[0]["figure_ids"])
+        self.assertEqual("rId7", sections[0]["figure_refs"][0]["relationship_id"])
+        self.assertTrue(any("[[FIGURE_REF: 图5.2-01]]" in chunk["text"] for chunk in chunks))
+
+    def test_ambiguous_or_duplicate_figure_mapping_fails_closed(self):
+        manifest = {
+            "paragraphs": [{"index": 1, "body_order": 3, "text": "图5.2-01 接口图"}],
+            "assets": [
+                {"kind": "image", "part": "word/media/a.png", "relationship_id": "rId1",
+                 "block_ref": "word/document.xml:paragraph:1:body_order:1"},
+                {"kind": "image", "part": "word/media/b.png", "relationship_id": "rId2",
+                 "block_ref": "word/document.xml:paragraph:2:body_order:2"},
+                {"kind": "image", "part": "word/media/c.png", "relationship_id": "rId3",
+                 "block_ref": "word/document.xml:paragraph:8:body_order:2"},
+            ],
+        }
+        refs, _ = _figure_references(manifest)
+        self.assertEqual([], refs)
+        self.assertNotEqual(PARSER_VERSION, PRODUCT_MATERIAL_INDEX_VERSION)
+
     def test_search_ignores_active_mongo_heads_missing_from_local_catalog(self):
         with tempfile.TemporaryDirectory(prefix="product-material-search-") as tmp:
             service = ProductMaterials(Path(tmp) / "data", Path(__file__).resolve().parents[1])
@@ -53,7 +249,8 @@ class ProductMaterialSearchTests(unittest.TestCase):
                     {"_id": "local-pm@1", "material_id": "local-pm", "revision": 1,
                      "version_id": "local-v1", "source_sha256": "local-hash", "state": "ready",
                      "chunk_ids": ["local-chunk"], "products": "NCC", "domain": ["财务会计"],
-                     "title": "总账管理"},
+                     "title": "总账管理", "sections": [{"section_id": "s1",
+                     "figure_ids": ["图5.2-01"]}]},
                     {"_id": "foreign-pm@9", "material_id": "foreign-pm", "revision": 9,
                      "version_id": "foreign-v9", "source_sha256": "foreign-hash", "state": "ready",
                      "chunk_ids": ["foreign-chunk"], "products": "NCC", "domain": ["财务会计"],
@@ -67,6 +264,10 @@ class ProductMaterialSearchTests(unittest.TestCase):
                     "id": "local-chunk", "score": 0.9, "text": "凭证管理",
                     "metadata": {"section_id": "s1", "heading_path": ["总账管理"]},
                 }]
+                rag._db.return_value.query_by_ids.return_value = [{
+                    "id": "local-chunk", "text": "## 总账管理\n\n[[FIGURE_REF: 图5.2-01]]",
+                    "metadata": '{"section_id":"s1","heading_path":["总账管理"]}',
+                }]
                 service._rag = rag
 
                 hits = service.search("凭证管理", product="NCC", domain=["财务会计"],
@@ -75,6 +276,15 @@ class ProductMaterialSearchTests(unittest.TestCase):
                 self.assertEqual(["local-pm"], [hit["material_id"] for hit in hits])
                 self.assertEqual(1, len(records.lookups))
                 self.assertEqual({"_id": "local-pm@1", "state": "ready"}, records.lookups[0])
+
+                exact_hits = service.search("图5.2.01", product="NCC", domain=["财务会计"],
+                                            category="产品手册", limit=1)
+                self.assertEqual("图5.2-01", exact_hits[0]["metadata"]["figure_ids"][0])
+                self.assertEqual("figure_id", exact_hits[0]["exact_match"])
+                self.assertEqual("", exact_hits[0]["stage"])
+                self.assertEqual("", exact_hits[0]["metadata"]["stage"])
+                rag._db.return_value.search.assert_called_once()
+                rag._db.return_value.query_by_ids.assert_called_once_with(["local-chunk"])
             finally:
                 service.close()
 
@@ -97,7 +307,7 @@ class ProductMaterialSearchTests(unittest.TestCase):
                     "domains_json,parser_version,section_count,image_count,state,created_at)"
                     " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     ("pmv-test", "pm-test", 1, source_hash, source.stat().st_size,
-                     "application/docx", source.name, '["财务会计"]', PARSER_VERSION, 2, 1, "ready", "now"))
+                     "application/docx", source.name, '["财务会计"]', PRODUCT_MATERIAL_INDEX_VERSION, 2, 1, "ready", "now"))
                 service.store.conn.commit()
 
                 prefix = "test_"
@@ -127,6 +337,7 @@ class ProductMaterialSearchTests(unittest.TestCase):
                 self.assertEqual(2, result["chunks"])
                 self.assertEqual(2, result["verified_chunks"])
                 self.assertEqual("original_ingest", result["verification_basis"])
+                self.assertEqual("", result["stage"])
                 self.assertFalse(result["readback_performed_this_call"])
                 self.assertEqual(1, result["embedded_images_not_ocr_processed"])
             finally:

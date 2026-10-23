@@ -1,15 +1,17 @@
 """Direct Word intake and retrieval for the product-material RAG corpus.
 
-Product manuals and training material keep their original Word file and are
-parsed into source-linked sections and chunks without the project distillation
-or review workflow. MongoDB/Milvus collections remain in the existing sandbox
-deployment and are routed separately from the six project lifecycle stages.
+The current intake accepts product manuals only. Training material remains a
+reserved category for a future iteration. Accepted originals are parsed into
+source-linked sections and chunks without the project distillation or review
+workflow. MongoDB/Milvus collections remain in the existing sandbox deployment
+and are routed separately from the six project lifecycle stages.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import re
+import shutil
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,13 +21,72 @@ from langchain_core.documents import Document
 from ckp import db
 from ckp.catalog import validate_selection
 from ckp.intake import hash_file
-from ckp.office_parser import PARSER_VERSION, inspect_office
+from ckp.office_parser import (MCP_CONVERT_IMAGE_FORMATS, MCP_NATIVE_IMAGE_FORMATS,
+                               PARSER_VERSION, inspect_office, read_docx_image,
+                               render_image_for_mcp)
 from ckp.store import Store
 from ckp.knowledge_types import (
     PRODUCT_MATERIAL_COLLECTIONS, PRODUCT_MATERIAL_CATEGORIES,
-    validate_product_material_category,
+    validate_product_material_category, validate_product_material_ingest_category,
 )
 from chunks_and_in_vector.pipeline import SandboxRAG
+
+PRODUCT_MATERIAL_INDEX_VERSION = f"{PARSER_VERSION}+figure-ref-v1+toc-clean-v4"
+PRODUCT_MATERIAL_STAGE = ""
+_FIGURE_CAPTION = re.compile(r"^\s*图\s*(\d+(?:\.\d+)*)(?:[-.])(\d{2})(?!\d)")
+_FIGURE_QUERY = re.compile(r"^\s*图\s*(\d+(?:\.\d+)*)(?:[-.])(\d{2})\s*$")
+
+
+def _figure_query_id(query: str) -> str | None:
+    match = _FIGURE_QUERY.fullmatch(query)
+    return f"图{match.group(1)}-{match.group(2)}" if match else None
+
+
+def _body_order_from_ref(value: str) -> int | None:
+    match = re.search(r":body_order:(\d+)$", value or "")
+    return int(match.group(1)) if match else None
+
+
+def _figure_references(manifest: dict) -> tuple[list[dict], dict[int, list[dict]]]:
+    """Map formal figure captions to one unambiguous nearby embedded image."""
+    paragraphs = manifest.get("paragraphs", [])
+    assets = manifest.get("assets", [])
+    counts: dict[str, int] = {}
+    captions = []
+    for paragraph in paragraphs:
+        match = _FIGURE_CAPTION.match(paragraph.get("text") or "")
+        if match:
+            figure_id = f"图{match.group(1)}-{match.group(2)}"
+            counts[figure_id] = counts.get(figure_id, 0) + 1
+            captions.append((figure_id, paragraph))
+
+    refs, at_order = [], {}
+    for figure_id, paragraph in captions:
+        if counts[figure_id] != 1:
+            continue
+        caption_order = paragraph.get("body_order")
+        if not isinstance(caption_order, int):
+            continue
+        candidates = []
+        for asset in assets:
+            image_order = _body_order_from_ref(asset.get("block_ref", ""))
+            if (asset.get("kind") == "image" and asset.get("relationship_id")
+                    and asset.get("part") and image_order is not None
+                    and 0 <= caption_order - image_order <= 3):
+                candidates.append((image_order, asset))
+        if not candidates:
+            continue
+        nearest_order = max(order for order, _ in candidates)
+        nearest = [asset for order, asset in candidates if order == nearest_order]
+        if len(nearest) != 1:
+            continue
+        asset = nearest[0]
+        ref = {"figure_id": figure_id, "relationship_id": asset["relationship_id"],
+               "part": asset["part"], "image_body_order": nearest_order,
+               "caption_body_order": caption_order}
+        refs.append(ref)
+        at_order.setdefault(caption_order, []).append(ref)
+    return refs, at_order
 
 
 def _now() -> str:
@@ -48,28 +109,226 @@ def _numbered_heading_level(text: str) -> int | None:
         return 1
     if re.match(r"^[一二三四五六七八九十]+[、.．]\s*\S", value):
         return 1
-    decimal = re.match(r"^(\d+(?:\.\d+){1,5})[、.．]?\s+\S", value)
+    decimal = re.match(r"^(\d+(?:\.\d+){1,5})[、.．]?\s*(?=\D)\S", value)
     if decimal:
         return min(decimal.group(1).count(".") + 1, 6)
     return None
 
 
+def _is_toc_style(style: str) -> bool:
+    """Recognize generated Word table-of-contents entry styles."""
+    return bool(re.fullmatch(r"(?:toc|目录)\s*[1-9]?", style.strip(), re.I))
+
+
+def _style_heading_level(style: str) -> int | None:
+    match = re.search(r"(?:heading|标题)\s*([1-6])$", style.strip(), re.I)
+    return int(match.group(1)) if match else None
+
+
+def _toc_level(style: str) -> int | None:
+    match = re.fullmatch(r"(?:toc|目录)\s*([1-9])?", style.strip(), re.I)
+    return int(match.group(1)) if match and match.group(1) else None
+
+
+_HEADING_NUMBER = re.compile(
+    r"^\s*(?P<number>第[一二三四五六七八九十百0-9]+[章节篇]|"
+    r"[0-9]+(?:[.．][0-9]+)*)(?:[、.．)）:-]?\s*)(?P<title>.+?)\s*$"
+)
+
+
+def _numbered_title(value: str) -> tuple[str, str] | None:
+    """Return a visible heading number and title without changing source text."""
+    text = re.sub(r"[.．·…]{2,}\s*\d+\s*$", "", value.strip())
+    text = re.sub(r"\s+\d{1,4}\s*$", "", text)
+    match = _HEADING_NUMBER.match(text)
+    if not match:
+        return None
+    title = re.sub(r"\s+", " ", match.group("title")).strip(" .。\t")
+    number = match.group("number").replace("．", ".")
+    return (number, title) if title else None
+
+
+def _heading_quality_warnings(manifest: dict) -> list[dict]:
+    """Compare Word TOC/body entries and numbered heading structure without rewriting labels."""
+    toc: dict[str, list[dict]] = {}
+    body: dict[str, list[dict]] = {}
+    numbered_body = []
+    structural_stack: dict[int, dict] = {}
+    for paragraph in manifest.get("paragraphs", []):
+        style = str(paragraph.get("style") or "")
+        text = str(paragraph.get("text") or "").strip()
+        numbered = _numbered_title(text)
+        if not numbered:
+            continue
+        number, title = numbered
+        title_key = re.sub(r"[^\w\u4e00-\u9fff]+", "", title).casefold()
+        if not title_key:
+            continue
+        index = int(paragraph.get("index", 0) or 0)
+        toc_entry = _is_toc_style(style)
+        target = toc if toc_entry else body
+        if not toc_entry and not (paragraph.get("heading_level") is not None
+                                  or paragraph.get("outline_level") is not None
+                                  or _style_heading_level(style) is not None):
+            continue
+        try:
+            level = (int(paragraph.get("heading_level")) if paragraph.get("heading_level") is not None
+                     else int(paragraph.get("outline_level")) + 1
+                     if paragraph.get("outline_level") is not None else None)
+        except (TypeError, ValueError):
+            level = None
+        if level is None:
+            level = _toc_level(style) if toc_entry else _style_heading_level(style)
+        entry = {
+            "number": number, "index": index, "title": title, "level": level,
+        }
+        target.setdefault(title_key, []).append(entry)
+        if not toc_entry:
+            if level is not None:
+                entry["structural_parent"] = structural_stack.get(level - 1)
+                for ancestor_level in list(structural_stack):
+                    if ancestor_level >= level:
+                        del structural_stack[ancestor_level]
+                structural_stack[level] = entry
+            numbered_body.append((paragraph, entry))
+
+    warnings = []
+    for paragraph, entry in numbered_body:
+        if entry["level"] is None or not re.fullmatch(r"\d+(?:\.\d+)*", entry["number"]):
+            continue
+        number_parts = entry["number"].split(".")
+        parent = entry.get("structural_parent")
+        if len(number_parts) > 1 and parent is not None:
+            expected_parent = ".".join(number_parts[:-1])
+            parent_number = parent["number"]
+            if (re.fullmatch(r"\d+(?:\.\d+)*", parent_number)
+                    and expected_parent != parent_number):
+                warnings.append({
+                    "code": "heading_number_parent_mismatch",
+                    "severity": "review",
+                    "title": entry["title"],
+                    "number": entry["number"],
+                    "expected_parent_number": expected_parent,
+                    "actual_parent_number": parent_number,
+                    "body_paragraph": entry["index"],
+                    "parent_paragraph": parent["index"],
+                    "action": "核对本章与上级标题的编号关系；保留原文，不自动移动或改号",
+                })
+
+    sibling_numbers: dict[str, list[dict]] = {}
+    for _, entry in numbered_body:
+        number_parts = entry["number"].split(".")
+        if len(number_parts) < 2 or not all(part.isdigit() for part in number_parts):
+            continue
+        parent_number = ".".join(number_parts[:-1])
+        sibling_numbers.setdefault(parent_number, []).append(entry)
+    for parent_number, entries in sibling_numbers.items():
+        by_number: dict[int, list[dict]] = {}
+        for entry in entries:
+            by_number.setdefault(int(entry["number"].split(".")[-1]), []).append(entry)
+        observed = sorted(by_number)
+        for previous, following in zip(observed, observed[1:]):
+            if following > previous + 1:
+                warnings.append({
+                    "code": "heading_number_gap",
+                    "severity": "review",
+                    "parent_number": parent_number,
+                    "missing_numbers": [f"{parent_number}.{n}"
+                                        for n in range(previous + 1, following)],
+                    "before_paragraph": by_number[previous][0]["index"],
+                    "after_paragraph": by_number[following][0]["index"],
+                    "action": "核对章节是否缺失、未被识别或编号跳号；不自动补章或改号",
+                })
+
+    matched_in_toc_order = []
+    for title_key, toc_entries in toc.items():
+        body_entries = body.get(title_key, [])
+        if len(toc_entries) != 1 or len(body_entries) > 1:
+            if body_entries:
+                warnings.append({
+                    "code": "toc_body_heading_match_ambiguous",
+                    "severity": "review",
+                    "title": toc_entries[0]["title"],
+                    "toc_entries": len(toc_entries),
+                    "body_entries": len(body_entries),
+                    "action": "标题存在重复匹配；请人工核对目录与正文，不自动关联或改写",
+                })
+            continue
+        toc_entry = toc_entries[0]
+        if not body_entries:
+            warnings.append({
+                "code": "toc_heading_missing_from_body",
+                "severity": "review",
+                "title": toc_entry["title"],
+                "toc_number": toc_entry["number"],
+                "toc_paragraph": toc_entry["index"],
+                "action": "核对目录是否过期或正文标题是否未被识别；不自动补写章节",
+            })
+            continue
+        body_entry = body_entries[0]
+        matched_in_toc_order.append((toc_entry, body_entry))
+        if toc_entry["number"] != body_entry["number"]:
+            warnings.append({
+                "code": "toc_body_heading_number_mismatch",
+                "severity": "review",
+                "title": toc_entry["title"],
+                "toc_number": toc_entry["number"],
+                "body_number": body_entry["number"],
+                "toc_paragraph": toc_entry["index"],
+                "body_paragraph": body_entry["index"],
+                "action": "核对 Word 正文与自动目录；保留原文编号，不自动改写",
+            })
+        if (toc_entry["level"] is not None and body_entry["level"] is not None
+                and toc_entry["level"] != body_entry["level"]):
+            warnings.append({
+                "code": "toc_body_heading_level_mismatch",
+                "severity": "review",
+                "title": toc_entry["title"],
+                "toc_level": toc_entry["level"],
+                "body_level": body_entry["level"],
+                "toc_paragraph": toc_entry["index"],
+                "body_paragraph": body_entry["index"],
+                "action": "核对 Word 标题样式与目录层级；不自动调整层级",
+            })
+
+    ordered_matches = sorted(matched_in_toc_order, key=lambda pair: pair[0]["index"])
+    body_positions = [pair[1]["index"] for pair in ordered_matches]
+    if body_positions != sorted(body_positions):
+        warnings.append({
+            "code": "toc_body_heading_order_mismatch",
+            "severity": "review",
+            "action": "目录标题顺序与正文顺序不一致；请核对目录是否过期或正文结构，不自动移动内容",
+        })
+    return warnings
+
+
 def _sections(manifest: dict, material_id: str, revision: int,
-              splitter=None) -> tuple[list[dict], list[dict]]:
+              splitter=None, figure_refs_by_order: dict[int, list[dict]] | None = None
+              ) -> tuple[list[dict], list[dict]]:
+    figure_refs_by_order = figure_refs_by_order or {}
     blocks = []
     for item in manifest.get("paragraphs", []):
         blocks.append((item.get("body_order", 0), "paragraph", item))
     for item in manifest.get("tables", []):
         blocks.append((item.get("body_order", 0), "table", item))
-    blocks.sort(key=lambda item: item[0])
+    for body_order, refs in figure_refs_by_order.items():
+        for ref in refs:
+            blocks.append((body_order, "figure_ref", ref))
+    blocks.sort(key=lambda item: (item[0], 0 if item[1] == "figure_ref" else 1))
     sections: list[dict] = []
     heading_path: list[str] = []
     current = None
     for body_order, kind, item in blocks:
-        if kind == "paragraph":
+        if kind == "figure_ref":
+            text = f"[[FIGURE_REF: {item['figure_id']}]]"
+        elif kind == "paragraph":
             text = (item.get("text") or "").strip()
             outline = item.get("outline_level")
             style = str(item.get("style") or "")
+            # TOC rows often contain decimal chapter numbers and otherwise
+            # look like headings. They are navigation noise, not body content.
+            if _is_toc_style(style):
+                continue
             try:
                 level = int(item.get("heading_level")) if item.get("heading_level") is not None else None
             except (TypeError, ValueError):
@@ -91,7 +350,7 @@ def _sections(manifest: dict, material_id: str, revision: int,
                 heading_path = heading_path[:level - 1] + [text]
                 current = None
                 continue
-        else:
+        elif kind == "table":
             text = _table_text(item)
         if not text:
             continue
@@ -105,12 +364,17 @@ def _sections(manifest: dict, material_id: str, revision: int,
         current["blocks"].append({"body_order": body_order, "type": kind,
                                    "source_index": item.get("index", item.get("table")),
                                    "text": text})
+        if kind == "figure_ref":
+            current.setdefault("figure_ids", []).append(item["figure_id"])
 
     rendered = []
     for section in sections:
         section["text"] = "\n\n".join(block["text"] for block in section["blocks"])
         del section["blocks"]
-        rendered.append({**section, "heading": " / ".join(section["heading_path"])})
+        rendered.append({**section, "heading": " / ".join(section["heading_path"]),
+                         "figure_refs": [ref for ref in sum(figure_refs_by_order.values(), [])
+                                         if ref["figure_id"] in section.get("figure_ids", [])]})
+        section.pop("figure_ids", None)
     if not rendered:
         raise ValueError("Word 文档未提取到可索引的正文或表格")
 
@@ -175,6 +439,7 @@ class ProductMaterials:
 
     def ingest(self, path: str | Path, category: str, product: str,
                domains: list[str] | None) -> dict:
+        category = validate_product_material_ingest_category(category)
         source = Path(path).expanduser()
         if not source.is_absolute():
             raise ValueError("产品资料必须提供文件绝对路径")
@@ -182,7 +447,6 @@ class ProductMaterials:
             raise ValueError("产品资料首版只接受 Word 文件 .doc/.docx")
         if not source.is_file():
             raise FileNotFoundError("指定的 Word 文件不存在")
-        category = validate_product_material_category(category)
         product, domains = validate_selection(self.repo_root, product, domains)
         source = source.resolve()
         sha256 = hash_file(source)
@@ -205,7 +469,7 @@ class ProductMaterials:
                 "SELECT * FROM product_material_versions WHERE version_id=?",
                 (existing["current_version_id"],)).fetchone()) if existing.get("current_version_id") else None
             if (current and current["sha256"] == sha256 and current["state"] == "ready"
-                    and current["parser_version"] == PARSER_VERSION
+                    and current["parser_version"] == PRODUCT_MATERIAL_INDEX_VERSION
                     and db.loads(current.get("domains_json"), []) == domains):
                 record_id = f"{existing['material_id']}@{current['revision']}"
                 active_head = self.rag.mongo.get_collection(
@@ -227,12 +491,16 @@ class ProductMaterials:
                             "revision": current["revision"], "version_id": current["version_id"],
                             "source_sha256": sha256,
                             "category": category, "products": product, "domain": domains,
+                            "stage": PRODUCT_MATERIAL_STAGE,
                             "active": True, "sections": section_count,
                             "chunks": indexed_chunks, "indexed_chunks": indexed_chunks,
                             "verified_chunks": verified_chunks,
                             "verification_basis": "original_ingest",
                             "readback_performed_this_call": False,
                             "embedded_images_not_ocr_processed": int(indexed_record.get("image_count", current.get("image_count", 0))),
+                            "figure_ref_count": len(indexed_record.get("figure_refs", [])),
+                            "figure_ids_sample": [ref["figure_id"] for ref in indexed_record.get("figure_refs", [])[:20]],
+                            "quality_warnings": indexed_record.get("quality_warnings", []),
                             "embedding_mode": self.rag.mode}
 
         duplicate = db.rowdict(self.store.conn.execute(
@@ -254,9 +522,13 @@ class ProductMaterials:
         temp_root.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="product-material-", dir=temp_root) as tmp:
             manifest = inspect_office(source, Path(tmp), file_id=material_id,
-                                      version_id=version_id, expected_sha256=sha256)
+                                      version_id=version_id, expected_sha256=sha256,
+                                      copy_assets=False)
+        figure_refs, figure_refs_by_order = _figure_references(manifest)
+        quality_warnings = _heading_quality_warnings(manifest)
         sections, chunks = _sections(manifest, material_id, revision,
-                                     getattr(self.rag.embedding, "split_section", None))
+                                     getattr(self.rag.embedding, "split_section", None),
+                                     figure_refs_by_order)
         self.store._store_blob(source, sha256, size)
         collection = self._collection(category)
         record_id = f"{material_id}@{revision}"
@@ -280,7 +552,7 @@ class ProductMaterials:
             "domains_json,parser_version,section_count,image_count,state,created_at)"
             " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (version_id, material_id, revision, sha256, size, db.guess_media_type(source.name),
-             source.name, db.dumps(domains), PARSER_VERSION, len(sections),
+             source.name, db.dumps(domains), PRODUCT_MATERIAL_INDEX_VERSION, len(sections),
              len(manifest.get("assets", [])), "staging", now))
         self.store.conn.commit()
 
@@ -292,10 +564,13 @@ class ProductMaterials:
                   "version_id": version_id, "source_sha256": sha256, "fingerprint": fingerprint,
                   "state": "staging", "chunk_ids": ids, "category": category,
                   "knowledge_class": "product_material", "products": product, "domain": domains,
+                "stage": PRODUCT_MATERIAL_STAGE,
                   "title": title, "filename": source.name,
                   "content": "\n\n".join(f"## {' / '.join(s['heading_path'])}\n\n{s['text']}" for s in sections),
                   "sections": sections, "image_count": len(manifest.get("assets", [])),
-                  "parser_version": PARSER_VERSION, "sandbox": True}
+                  "figure_refs": figure_refs,
+                  "quality_warnings": quality_warnings,
+                  "parser_version": PRODUCT_MATERIAL_INDEX_VERSION, "sandbox": True}
         records.replace_one({"_id": record_id}, record, upsert=True)
         documents = []
         for chunk in chunks:
@@ -305,6 +580,7 @@ class ProductMaterials:
                                                 "revision": revision, "source_sha256": sha256,
                                                 "category": category, "knowledge_class": "product_material",
                                                 "products": product, "domain": domains,
+                                                "stage": PRODUCT_MATERIAL_STAGE,
                                                 "section_id": chunk["section_id"],
                                                 "heading_path": chunk["heading_path"],
                                                 "offset": chunk["offset"], "file_name": title,
@@ -367,9 +643,13 @@ class ProductMaterials:
             raise
         return {"state": "indexed", "material_id": material_id, "revision": revision,
                 "version_id": version_id, "source_sha256": sha256, "category": category,
-                "products": product, "domain": domains, "sections": len(sections),
+                "products": product, "domain": domains, "stage": PRODUCT_MATERIAL_STAGE,
+                "sections": len(sections),
                 "chunks": len(chunks), "verified_chunks": verified,
                 "embedded_images_not_ocr_processed": len(manifest.get("assets", [])),
+                "figure_ref_count": len(figure_refs),
+                "figure_ids_sample": [ref["figure_id"] for ref in figure_refs[:20]],
+                "quality_warnings": quality_warnings,
                 "sandbox": True, "embedding_mode": self.rag.mode}
 
     def _active_chunk_count(self, material_id: str, revision: int) -> int:
@@ -398,6 +678,7 @@ class ProductMaterials:
             item = dict(row)
             item["domain"] = db.loads(item.pop("domains_json", "[]"), [])
             item["products"] = item.pop("product")
+            item["stage"] = PRODUCT_MATERIAL_STAGE
             rows.append(item)
         return rows
 
@@ -430,11 +711,76 @@ class ProductMaterials:
                          "characters": len(s["text"])} for s in sections]
         return {"material_id": material_id, "revision": revision, "source_sha256": source_sha256,
                 "category": item["category"], "products": record.get("products", record.get("product")),
-                "domain": record["domain"],
+                "domain": record["domain"], "stage": PRODUCT_MATERIAL_STAGE,
                 "title": record["title"], "filename": item["filename"],
                 "sections": selected, "section_count": len(sections),
+                "quality_warnings": record.get("quality_warnings", []),
                 "embedded_images_not_ocr_processed": item["image_count"],
                 "sandbox": True}
+
+    def read_image(self, material_id: str, revision: int, source_sha256: str,
+                   figure_id: str) -> tuple[bytes, str, dict]:
+        """Return one exact, hash-bound original image without persisting a copy."""
+        if not self._has_schema():
+            raise ValueError("产品资料修订不存在")
+        item = db.rowdict(self.store.conn.execute(
+            "SELECT m.category,v.* FROM product_materials m JOIN product_material_versions v"
+            " ON v.material_id=m.material_id WHERE m.material_id=? AND v.revision=? AND v.state='ready'",
+            (material_id, revision)).fetchone())
+        if not item or item["sha256"] != source_sha256:
+            raise ValueError("产品资料修订不存在或来源哈希不匹配")
+        record_id = f"{material_id}@{revision}"
+        record = self.rag.mongo.get_collection(self._collection(item["category"])).find_one(
+            {"_id": record_id, "state": "ready", "version_id": item["version_id"],
+             "source_sha256": source_sha256})
+        if not record:
+            raise ValueError("产品资料当前不可读")
+        matches = [ref for ref in record.get("figure_refs", [])
+                   if ref.get("figure_id") == figure_id]
+        if len(matches) != 1:
+            raise ValueError("该修订没有唯一、可定位的正式图号映射")
+        blob = db.rowdict(self.store.conn.execute(
+            "SELECT * FROM blobs WHERE sha256=?", (source_sha256,)).fetchone())
+        if not blob:
+            raise ValueError("产品资料原件存储引用缺失")
+        source = self.data_dir / blob["rel_path"]
+        if not source.is_file() or hash_file(source) != source_sha256:
+            raise ValueError("产品资料原件不存在或 SHA-256 校验失败")
+
+        temp_root = self.data_dir / "tmp"
+        temp_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="product-material-image-", dir=temp_root) as tmp:
+            # Content-addressed originals have no extension. Restore the
+            # verified source filename suffix in the temporary workspace so
+            # the Office parser can select its DOC/DOCX reader.
+            suffix = Path(item["filename"]).suffix.lower()
+            materialized_source = Path(tmp) / f"original{suffix}"
+            shutil.copyfile(source, materialized_source)
+            payload, image_format = read_docx_image(
+                materialized_source, Path(tmp), relationship_id=matches[0]["relationship_id"],
+                expected_part=matches[0]["part"], expected_sha256=source_sha256)
+            image_format = image_format.lower().lstrip(".")
+            if image_format in MCP_CONVERT_IMAGE_FORMATS:
+                extracted = Path(tmp) / f"source.{image_format}"
+                extracted.write_bytes(payload)
+                rendered = render_image_for_mcp(extracted, Path(tmp) / "rendered")
+                payload, image_format = rendered.read_bytes(), "png"
+            if image_format not in MCP_NATIVE_IMAGE_FORMATS:
+                raise ValueError(f"MCP 图片返回暂不支持该原图格式: .{image_format}")
+        section = next((s for s in record.get("sections", [])
+                        if figure_id in s.get("figure_ids", [])), None)
+        context = {"material_id": material_id, "revision": revision,
+                   "source_sha256": source_sha256, "title": record.get("title"),
+                   "filename": item["filename"], "figure_id": figure_id,
+                   "heading_path": section.get("heading_path", []) if section else [],
+                   "image_part": matches[0]["part"], "image_format": image_format,
+                   "mime_type": {"png": "image/png", "jpg": "image/jpeg",
+                                 "jpeg": "image/jpeg", "gif": "image/gif",
+                                 "webp": "image/webp"}[image_format],
+                   "hash_verified": True,
+                   "image_processed": False,
+                   "message": "已按图号从指定 Word 修订返回原图；服务端未解析或描述图片。"}
+        return payload, ("jpeg" if image_format == "jpg" else image_format), context
 
     def search(self, query: str, product: str = "", domain: list[str] | None = None,
                category: str = "", limit: int = 5) -> list[dict]:
@@ -443,6 +789,7 @@ class ProductMaterials:
         category_filter = validate_product_material_category(category) if category else None
         product_filter = product.strip() or None
         domain_filter = set(domain or [])
+        figure_query = _figure_query_id(query)
         categories = [category_filter] if category_filter else list(PRODUCT_MATERIAL_CATEGORIES)
         results = []
         local_active = {}
@@ -475,6 +822,38 @@ class ProductMaterials:
             if not allowed:
                 continue
             all_ids = list(allowed)
+            if figure_query:
+                matching_sections = {}
+                for record in {r["_id"]: r for r in allowed.values()}.values():
+                    section_ids = {section["section_id"] for section in record.get("sections", [])
+                                   if figure_query in section.get("figure_ids", [])}
+                    if section_ids:
+                        matching_sections[record["_id"]] = (record, section_ids)
+                if matching_sections:
+                    rows = self.rag._db(collection).query_by_ids(all_ids)
+                    for row in rows:
+                        record = allowed.get(row["id"])
+                        match = matching_sections.get(record.get("_id")) if record else None
+                        if not match:
+                            continue
+                        metadata = row.get("metadata") or {}
+                        if isinstance(metadata, str):
+                            metadata = json.loads(metadata)
+                        if metadata.get("section_id") not in match[1]:
+                            continue
+                        results.append({"id": row["id"], "text": row["text"],
+                                        "metadata": {**metadata, "stage": PRODUCT_MATERIAL_STAGE,
+                                                     "figure_ids": [figure_query]},
+                                        "score": 1.0, "category": cat,
+                                        "knowledge_class": "product_material",
+                                        "stage": PRODUCT_MATERIAL_STAGE,
+                                        "material_id": record["material_id"],
+                                        "revision": record["revision"],
+                                        "source_sha256": record["source_sha256"],
+                                        "products": record.get("products", record.get("product")),
+                                        "domain": record["domain"], "title": record["title"],
+                                        "sandbox": True, "exact_match": "figure_id"})
+                continue
             for offset in range(0, len(all_ids), 200):
                 hits = self.rag._db(collection).search(query, k=limit,
                     filter_expr="id in " + json.dumps(all_ids[offset:offset + 200]))
@@ -487,10 +866,12 @@ class ProductMaterials:
                     if not current:
                         continue
                     hit_metadata = hit.get("metadata") or {}
+                    hit_metadata["stage"] = PRODUCT_MATERIAL_STAGE
                     if "products" not in hit_metadata and hit_metadata.get("product"):
                         hit_metadata["products"] = hit_metadata["product"]
                     results.append({**hit, "metadata": hit_metadata,
                                     "category": cat, "knowledge_class": "product_material",
+                                    "stage": PRODUCT_MATERIAL_STAGE,
                                     "material_id": record["material_id"], "revision": record["revision"],
                                     "source_sha256": record["source_sha256"],
                                     "products": record.get("products", record.get("product")),

@@ -87,6 +87,39 @@ class OfficeParserTest(unittest.TestCase):
         self.assertTrue(_png_is_blank(blank))
         self.assertFalse(_png_is_blank(diagram))
 
+    def test_png_blank_guard_detects_empty_rectangle_preview(self):
+        width, height = 100, 80
+        pixels = bytearray(b"\xff\xff\xff" * (width * height))
+        for x in range(10, 90):
+            for y in (10, 69):
+                offset = (y * width + x) * 3
+                pixels[offset:offset + 3] = b"\x30\x30\x30"
+        for y in range(10, 70):
+            for x in (10, 89):
+                offset = (y * width + x) * 3
+                pixels[offset:offset + 3] = b"\x30\x30\x30"
+        frame = self.tmp / "empty-frame.png"
+        frame.write_bytes(_rgb_png(width, height, bytes(pixels)))
+        self.assertTrue(_png_is_blank(frame))
+
+    def test_png_blank_guard_keeps_rectangle_with_interior_diagram_content(self):
+        width, height = 100, 80
+        pixels = bytearray(b"\xff\xff\xff" * (width * height))
+        for x in range(10, 90):
+            for y in (10, 69):
+                offset = (y * width + x) * 3
+                pixels[offset:offset + 3] = b"\x30\x30\x30"
+        for y in range(10, 70):
+            for x in (10, 89):
+                offset = (y * width + x) * 3
+                pixels[offset:offset + 3] = b"\x30\x30\x30"
+        for x in range(40, 50):
+            offset = (40 * width + x) * 3
+            pixels[offset:offset + 3] = b"\x30\x30\x30"
+        frame_with_content = self.tmp / "frame-with-content.png"
+        frame_with_content.write_bytes(_rgb_png(width, height, bytes(pixels)))
+        self.assertFalse(_png_is_blank(frame_with_content))
+
     def test_png_canvas_trim_crops_small_diagram_from_oversized_white_margin(self):
         pixels = bytearray(b"\xff\xff\xff" * (100 * 100))
         for y in range(40, 60):
@@ -105,12 +138,31 @@ class OfficeParserTest(unittest.TestCase):
     def test_emfplus_embedded_bitmap_renders_without_libreoffice(self):
         source = self.tmp / "diagram.emf"
         source.write_bytes(_emfplus_bitmap_fixture())
-        with patch("ckp.office_parser._find_soffice", side_effect=AssertionError("unexpected LibreOffice fallback")):
+        with patch("ckp.office_parser._find_soffice", return_value=None):
             rendered = render_image_for_mcp(source, self.tmp / "rendered")
         self.assertFalse(_png_is_blank(rendered))
         width, height, pixels = _png_rgb_scanlines(rendered)
         self.assertEqual((2, 1), (width, height))
         self.assertEqual(b"\0\xff\x7f\x7f\x00\x00\xff", pixels)
+
+    def test_emfplus_prefers_full_libreoffice_render_over_embedded_preview(self):
+        source = self.tmp / "vector.emf"
+        source.write_bytes(_emfplus_bitmap_fixture())
+        full_diagram = _rgb_png(3, 1, b"\xff\xff\xff\0\0\0\xff\x00\x00")
+        calls = []
+
+        def fake_run(command, **_kwargs):
+            calls.append(command)
+            output = Path(command[command.index("--outdir") + 1]) / "vector.png"
+            output.write_bytes(full_diagram)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with patch("ckp.office_parser._find_soffice", return_value="/fake/soffice"), \
+             patch("ckp.office_parser.subprocess.run", side_effect=fake_run):
+            rendered = render_image_for_mcp(source, self.tmp / "rendered-full")
+
+        self.assertEqual(1, len(calls))
+        self.assertEqual((3, 1), _png_rgb_scanlines(rendered)[:2])
 
     def test_emfplus_negative_stride_restores_top_down_row_order(self):
         # Negative stride stores bottom row first: opaque blue, then opaque red.

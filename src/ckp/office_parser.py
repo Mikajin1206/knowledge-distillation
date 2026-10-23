@@ -21,7 +21,7 @@ from typing import Any
 from xml.etree import ElementTree as ET
 
 PARSER_VERSION = "ckp-office-inspector-v0.4"
-IMAGE_RENDERER_VERSION = "ckp-emfplus-bitmap-lo-fallback-v6"
+IMAGE_RENDERER_VERSION = "ckp-emf-lo-primary-frame-guard-bitmap-fallback-v8"
 NS = {
     "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
     "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
@@ -41,7 +41,8 @@ _R_LINK = "{" + NS["r"] + "}link"
 
 
 def inspect_office(source: Path, out_dir: Path, *, file_id: str,
-                   version_id: str, expected_sha256: str) -> dict:
+                   version_id: str, expected_sha256: str,
+                   copy_assets: bool = True) -> dict:
     source, out_dir = Path(source), Path(out_dir)
     actual_hash = _sha256(source)
     if actual_hash != expected_sha256:
@@ -61,7 +62,7 @@ def inspect_office(source: Path, out_dir: Path, *, file_id: str,
     assets_dir.mkdir(exist_ok=True)
     with zipfile.ZipFile(work_source) as zf:
         if suffix == ".docx":
-            manifest = _inspect_docx(zf, file_id, assets_dir)
+            manifest = _inspect_docx(zf, file_id, assets_dir, copy_assets=copy_assets)
         elif suffix == ".xlsx":
             manifest = _inspect_xlsx(zf, file_id, assets_dir)
         else:
@@ -82,6 +83,32 @@ def inspect_office(source: Path, out_dir: Path, *, file_id: str,
     manifest["manifest_path"] = str(manifest_path)
     manifest["assets_dir"] = str(assets_dir)
     return manifest
+
+
+def read_docx_image(source: Path, out_dir: Path, *, relationship_id: str,
+                    expected_part: str, expected_sha256: str) -> tuple[bytes, str]:
+    """Read one embedded Word image by an exact, hash-bound relationship."""
+    source, out_dir = Path(source), Path(out_dir)
+    if _sha256(source) != expected_sha256:
+        raise ValueError("产品手册原件哈希不匹配，已停止读取图片")
+    work_source = source
+    if source.suffix.lower() == ".doc":
+        work_source, _ = _convert_doc(source, out_dir)
+    elif source.suffix.lower() != ".docx":
+        raise ValueError("图片按图号回取仅支持 Word 文件")
+    if not zipfile.is_zipfile(work_source):
+        raise ValueError("产品手册图片来源不是有效 Word 文档")
+    with zipfile.ZipFile(work_source) as zf:
+        rel = _relationships(zf, "word/document.xml").get(relationship_id)
+        if not rel or rel.get("type") != "image" or rel.get("external"):
+            raise ValueError("产品手册图片关系不存在或不是内嵌图片")
+        target = rel.get("target") or ""
+        if target != expected_part or target not in zf.namelist():
+            raise ValueError("产品手册图片位置与入库映射不一致")
+        extension = _media_ext(target)
+        if extension == ".bin":
+            extension = _media_extensions(zf).get(target, extension)
+        return zf.read(target), extension.lstrip(".")
 
 
 def _sha256(path: Path) -> str:
@@ -210,48 +237,72 @@ def _png_is_blank(path: Path) -> bool:
     if len(pixels) != height * (stride + 1):
         raise ValueError("图片转换器生成的 PNG 像素尺寸与头部不一致")
 
-    previous = bytearray(stride)
-    first_color = None
-    varied = False
-    visible = False
-    cursor = 0
-    for _ in range(height):
-        filter_type = pixels[cursor]
-        cursor += 1
-        scanline = bytearray(pixels[cursor:cursor + stride])
-        cursor += stride
-        for index in range(stride):
-            left = scanline[index - channels] if index >= channels else 0
-            above = previous[index]
-            upper_left = previous[index - channels] if index >= channels else 0
-            if filter_type == 1:
-                scanline[index] = (scanline[index] + left) & 0xff
-            elif filter_type == 2:
-                scanline[index] = (scanline[index] + above) & 0xff
-            elif filter_type == 3:
-                scanline[index] = (scanline[index] + ((left + above) >> 1)) & 0xff
-            elif filter_type == 4:
-                estimate = left + above - upper_left
-                distances = (abs(estimate - left), abs(estimate - above),
-                             abs(estimate - upper_left))
-                predictor = (left if distances[0] <= distances[1] and distances[0] <= distances[2]
-                             else above if distances[1] <= distances[2] else upper_left)
-                scanline[index] = (scanline[index] + predictor) & 0xff
-            elif filter_type != 0:
-                raise ValueError(f"PNG 使用了不支持的行过滤器: {filter_type}")
+    def decoded_rows():
+        previous = bytearray(stride)
+        cursor = 0
+        for _ in range(height):
+            filter_type = pixels[cursor]
+            cursor += 1
+            scanline = bytearray(pixels[cursor:cursor + stride])
+            cursor += stride
+            for index in range(stride):
+                left = scanline[index - channels] if index >= channels else 0
+                above = previous[index]
+                upper_left = previous[index - channels] if index >= channels else 0
+                if filter_type == 1:
+                    scanline[index] = (scanline[index] + left) & 0xff
+                elif filter_type == 2:
+                    scanline[index] = (scanline[index] + above) & 0xff
+                elif filter_type == 3:
+                    scanline[index] = (scanline[index] + ((left + above) >> 1)) & 0xff
+                elif filter_type == 4:
+                    estimate = left + above - upper_left
+                    distances = (abs(estimate - left), abs(estimate - above),
+                                 abs(estimate - upper_left))
+                    predictor = (left if distances[0] <= distances[1] and distances[0] <= distances[2]
+                                 else above if distances[1] <= distances[2] else upper_left)
+                    scanline[index] = (scanline[index] + predictor) & 0xff
+                elif filter_type != 0:
+                    raise ValueError(f"PNG 使用了不支持的行过滤器: {filter_type}")
+            previous = scanline
+            yield scanline
 
-        for index in range(0, stride, channels):
-            color = bytes(scanline[index:index + channels])
-            if first_color is None:
-                first_color = color
-            elif color != first_color:
-                varied = True
-            if channels == 3 or color[3] != 0:
-                visible = True
-        previous = scanline
-        if varied and visible:
-            return False
-    return not varied or not visible
+    background = None
+    min_x, min_y, max_x, max_y = width, height, -1, -1
+    for y, row in enumerate(decoded_rows()):
+        for x in range(width):
+            color = bytes(row[x * channels:(x + 1) * channels])
+            if background is None:
+                background = color
+            if channels == 4 and color[3] <= 8:
+                continue
+            if any(abs(color[channel] - background[channel]) > 16 for channel in range(3)):
+                min_x, min_y = min(min_x, x), min(min_y, y)
+                max_x, max_y = max(max_x, x), max(max_y, y)
+    if max_x < min_x or max_y < min_y:
+        return True
+
+    # A thin rectangle around an otherwise empty canvas is the failed EMF
+    # preview observed in the real product manual. Treat it as a blank render
+    # so the PDF fallback can run instead of presenting the frame as an image.
+    box_width, box_height = max_x - min_x + 1, max_y - min_y + 1
+    if (width >= 32 and height >= 32 and box_width >= width * 0.4
+            and box_height >= height * 0.4):
+        padding = max(2, min(width, height) // 100)
+        interior_content = 0
+        for y, row in enumerate(decoded_rows()):
+            if min_y + padding < y < max_y - padding:
+                for x in range(min_x + padding + 1, max_x - padding):
+                    color = row[x * channels:(x + 1) * channels]
+                    if channels == 4 and color[3] <= 8:
+                        continue
+                    if any(abs(color[channel] - background[channel]) > 16
+                           for channel in range(3)):
+                        interior_content += 1
+                        if interior_content > max(4, width * height // 10000):
+                            return False
+        return True
+    return False
 
 
 def _trim_png_canvas(path: Path) -> bool:
@@ -474,14 +525,21 @@ def render_image_for_mcp(source: Path, output_dir: Path) -> Path:
                 "请将该图片标记为未识别并保留待确认，不要据此复原流程"
             )
         return target
+    embedded_bitmap = None
     if image_format == "emf":
+        # EMF+ can contain both a small bitmap preview and vector drawing
+        # records. Prefer LibreOffice's full-document renderer when available;
+        # extracting the first embedded bitmap can silently discard the actual
+        # diagram and leave only a placeholder frame.
         with tempfile.TemporaryDirectory(prefix="emfplus-render-", dir=output_dir) as temp_name:
             candidate = Path(temp_name) / target.name
             if _render_emfplus_bitmap(source, candidate) and not _png_is_blank(candidate):
-                os.replace(candidate, target)
-                return target
+                embedded_bitmap = candidate.read_bytes()
     converter = _find_soffice()
     if not converter:
+        if embedded_bitmap is not None:
+            target.write_bytes(embedded_bitmap)
+            return target
         raise ValueError(f"图片 {source.name} 是 {source.suffix.lower()} 格式；当前环境未安装 LibreOffice，无法转换为 MCP 可读 PNG")
     with tempfile.TemporaryDirectory(prefix="vector-render-", dir=output_dir) as temp_name:
         temp_dir = Path(temp_name)
@@ -494,6 +552,9 @@ def render_image_for_mcp(source: Path, output_dir: Path) -> Path:
             env=_soffice_environment(converter))
         rendered = temp_dir / f"{source.stem}.png"
         if result.returncode != 0 or not rendered.is_file() or not rendered.stat().st_size:
+            if embedded_bitmap is not None:
+                target.write_bytes(embedded_bitmap)
+                return target
             detail = (result.stderr or result.stdout or "未生成 PNG")[-800:]
             raise ValueError(f"图片 {source.name} 转换为 PNG 失败: {detail}")
         _trim_png_canvas(rendered)
@@ -510,6 +571,9 @@ def render_image_for_mcp(source: Path, output_dir: Path) -> Path:
                     failures.append("PDF 栅格化输出为空白")
             except ValueError as exc:
                 failures.append(str(exc))
+            if recovered is None and embedded_bitmap is not None:
+                target.write_bytes(embedded_bitmap)
+                return target
             if recovered is None:
                 raise ValueError(
                     f"图片 {source.name} 直接转换裁边后仍为空白，PDF 回退失败（{'；'.join(failures)}）；"
@@ -703,7 +767,8 @@ def _docx_style_heading_levels(zf: zipfile.ZipFile) -> dict[str, int]:
     return resolved
 
 
-def _inspect_docx(zf: zipfile.ZipFile, file_id: str, assets_dir: Path) -> dict:
+def _inspect_docx(zf: zipfile.ZipFile, file_id: str, assets_dir: Path,
+                  *, copy_assets: bool = True) -> dict:
     main_part = "word/document.xml"
     if main_part not in zf.namelist():
         raise ValueError("DOCX 缺少 word/document.xml")
@@ -764,7 +829,8 @@ def _inspect_docx(zf: zipfile.ZipFile, file_id: str, assets_dir: Path) -> dict:
             if not target:
                 continue
             idx += 1
-            copied = _copy_asset(zf, target, assets_dir, file_id, idx, media_extensions)
+            copied = (_copy_asset(zf, target, assets_dir, file_id, idx, media_extensions)
+                      if copy_assets else None)
             # ElementTree has no parent pointers; use the nearest drawing container.
             docpr = _docpr_for_image_ref(xml, image_ref)
             block_ref, block_context = _asset_block_context(xml, part_body,

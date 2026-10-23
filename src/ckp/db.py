@@ -51,6 +51,33 @@ CREATE TABLE IF NOT EXISTS blobs (
   size INTEGER NOT NULL,
   rel_path TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS product_materials (
+  material_id TEXT PRIMARY KEY,
+  category TEXT NOT NULL,
+  product TEXT NOT NULL,
+  title TEXT NOT NULL,
+  current_version_id TEXT,
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(category, product, title)
+);
+CREATE TABLE IF NOT EXISTS product_material_versions (
+  version_id TEXT PRIMARY KEY,
+  material_id TEXT NOT NULL REFERENCES product_materials(material_id),
+  revision INTEGER NOT NULL,
+  sha256 TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  media_type TEXT NOT NULL,
+  filename TEXT NOT NULL,
+  domains_json TEXT NOT NULL,
+  parser_version TEXT NOT NULL,
+  section_count INTEGER NOT NULL,
+  image_count INTEGER NOT NULL DEFAULT 0,
+  state TEXT NOT NULL DEFAULT 'stored',
+  created_at TEXT NOT NULL,
+  UNIQUE(material_id, revision)
+);
 CREATE TABLE IF NOT EXISTS upload_records (
   upload_id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL,
@@ -215,7 +242,45 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
         existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
         if column not in existing:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+    _migrate_product_material_hash_uniqueness(conn)
     conn.commit()
+
+
+def _migrate_product_material_hash_uniqueness(conn: sqlite3.Connection) -> None:
+    """Allow a source hash to have multiple immutable parser/index revisions."""
+    if not conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='product_material_versions'"
+    ).fetchone():
+        return
+    indexes = conn.execute("PRAGMA index_list(product_material_versions)").fetchall()
+    constrained = False
+    for index in indexes:
+        if not index["unique"]:
+            continue
+        name = index["name"].replace('"', '""')
+        columns = [row["name"] for row in conn.execute(f'PRAGMA index_info("{name}")')]
+        if columns == ["material_id", "sha256"]:
+            constrained = True
+            break
+    if not constrained:
+        return
+
+    conn.execute("ALTER TABLE product_material_versions RENAME TO product_material_versions_legacy")
+    conn.execute(
+        "CREATE TABLE product_material_versions ("
+        "version_id TEXT PRIMARY KEY, material_id TEXT NOT NULL REFERENCES product_materials(material_id),"
+        "revision INTEGER NOT NULL, sha256 TEXT NOT NULL, size INTEGER NOT NULL, media_type TEXT NOT NULL,"
+        "filename TEXT NOT NULL, domains_json TEXT NOT NULL, parser_version TEXT NOT NULL,"
+        "section_count INTEGER NOT NULL, image_count INTEGER NOT NULL DEFAULT 0,"
+        "state TEXT NOT NULL DEFAULT 'stored', created_at TEXT NOT NULL, UNIQUE(material_id, revision))"
+    )
+    conn.execute(
+        "INSERT INTO product_material_versions(version_id,material_id,revision,sha256,size,media_type,filename,"
+        "domains_json,parser_version,section_count,image_count,state,created_at) "
+        "SELECT version_id,material_id,revision,sha256,size,media_type,filename,domains_json,parser_version,"
+        "section_count,image_count,state,created_at FROM product_material_versions_legacy"
+    )
+    conn.execute("DROP TABLE product_material_versions_legacy")
 
 
 def connect(data_dir: Path, readonly: bool = False) -> sqlite3.Connection:

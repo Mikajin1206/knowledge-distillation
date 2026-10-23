@@ -12,6 +12,15 @@ STAGE_COLLECTIONS = {
 }
 STAGES = tuple(STAGE_COLLECTIONS)
 
+# Product materials form a separate logical corpus, routed within the same MCP
+# service and sandbox RAG deployment. They do not belong to project lifecycle
+# stages and therefore have their own controlled collections.
+PRODUCT_MATERIAL_COLLECTIONS = {
+    "产品手册": "cb_product_manuals",
+    "培训资料": "cb_training_materials",
+}
+PRODUCT_MATERIAL_CATEGORIES = tuple(PRODUCT_MATERIAL_COLLECTIONS)
+
 # These are client suggestions only. knowledge_type remains a free-form
 # document attribute and does not select a RAG collection.
 DOCUMENT_TYPE_OPTIONS = (
@@ -28,4 +37,13 @@ def validate_stage(value: object) -> str:
                 f"未知项目阶段 {normalized!r}；可选值：{'、'.join(STAGES)}"
             )
         raise ValueError(f"项目阶段不能为空；可选值：{'、'.join(STAGES)}")
+    return normalized
+
+
+def validate_product_material_category(value: object) -> str:
+    normalized = value.strip() if isinstance(value, str) else ""
+    if normalized not in PRODUCT_MATERIAL_COLLECTIONS:
+        raise ValueError(
+            f"未知产品资料类别 {normalized!r}；可选值：{'、'.join(PRODUCT_MATERIAL_CATEGORIES)}"
+        )
     return normalized

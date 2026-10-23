@@ -100,7 +100,7 @@ class McpServerEndToEnd(unittest.TestCase):
             "clientInfo": {"name": "ckp-e2e", "version": "0"}})
         server_info = init["result"]["serverInfo"]
         self.assertEqual("Knowledge Distillation", server_info["name"])
-        self.assertEqual("1.3.0", server_info["version"])
+        self.assertEqual("1.4.0", server_info["version"])
         instructions = init["result"].get("instructions", "")
         self.assertIn("distill_word_content", instructions)
         self.assertIn("distill_word_image", instructions)
@@ -120,6 +120,7 @@ class McpServerEndToEnd(unittest.TestCase):
         self.assertIn("足够时直接回答，不调用 read_knowledge", instructions)
         self.assertIn("命中少或分数低本身不是读全文理由", instructions)
         self.assertIn("完整还原须保留节点、边、条件、方向、分组及 unresolved_items", instructions)
+        self.assertIn("产品资料属于独立逻辑资料库", instructions)
         self._send({"jsonrpc": "2.0", "method": "notifications/initialized"})
         # 2 工具清单
         tools = self._request("tools/list")["result"]["tools"]
@@ -135,6 +136,9 @@ class McpServerEndToEnd(unittest.TestCase):
                     "draft_verify", "knowledge_status", "submit_for_review", "record_review",
                     "publish_knowledge", "get_publish_task", "search_knowledge",
                     "read_knowledge", "get_asset", "withdraw_knowledge"}
+        expected.update({"product_material_ingest", "product_material_list",
+                         "search_product_materials", "read_product_material",
+                         "product_material_export_original", "withdraw_product_material"})
         self.assertEqual(expected, names)
         self.assertNotIn('ctx', schemas['distill_word_image'].get('properties', {}))
         self.assertNotIn('ctx', schemas['get_publish_task'].get('properties', {}))
@@ -152,12 +156,22 @@ class McpServerEndToEnd(unittest.TestCase):
         preflight = self._call("distill_stages", {})
         self.assertEqual(6, len(preflight["stages"]))
         info = preflight["server_info"]
-        self.assertEqual("1.3.0", info["server_version"])
-        self.assertEqual("ckp-office-inspector-v0.3", info["parser_version"])
+        self.assertEqual("1.4.0", info["server_version"])
+        self.assertEqual("ckp-office-inspector-v0.4", info["parser_version"])
         self.assertEqual("ckp-emfplus-bitmap-lo-fallback-v6", info["image_renderer_version"])
         self.assertEqual(["svg", "emf", "wmf", "bmp", "tif", "tiff"],
                          info["image_formats_converted_to_png"])
         self.assertFalse(info["ocr"])
+        # Product materials are routed through this same MCP, with explicit
+        # category/product/domain inputs; an empty read-only list works on a
+        # fresh data directory without initializing persistent storage.
+        self.assertEqual(["category", "domain", "path", "product"],
+                         sorted(schemas["product_material_ingest"]["required"]))
+        self.assertIn("full_document", schemas["read_product_material"]["properties"])
+        product_materials = self._call("product_material_list", {})
+        self.assertEqual(0, product_materials["count"])
+        self.assertEqual([], product_materials["materials"])
+        self.assertEqual(["产品手册", "培训资料"], product_materials["categories"])
         # 3 业务流
         missing_name = self._call_expect_error("project_create", {"name": ""})
         self.assertIn("项目名称不能为空", missing_name)

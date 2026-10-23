@@ -20,7 +20,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from xml.etree import ElementTree as ET
 
-PARSER_VERSION = "ckp-office-inspector-v0.3"
+PARSER_VERSION = "ckp-office-inspector-v0.4"
 IMAGE_RENDERER_VERSION = "ckp-emfplus-bitmap-lo-fallback-v6"
 NS = {
     "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
@@ -650,6 +650,59 @@ def _unreferenced_media(zf: zipfile.ZipFile, used: set[str]) -> list[str]:
     return sorted(set(media) - used)
 
 
+def _outline_heading_level(value: str | None) -> int | None:
+    try:
+        level = int(value)
+    except (TypeError, ValueError):
+        return None
+    return level + 1 if 0 <= level <= 5 else None
+
+
+def _style_name_heading_level(value: str | None) -> int | None:
+    match = re.search(r"(?:heading|标题)\s*([1-6])$", str(value or "").strip(), re.I)
+    return int(match.group(1)) if match else None
+
+
+def _docx_style_heading_levels(zf: zipfile.ZipFile) -> dict[str, int]:
+    """Resolve heading levels declared by paragraph styles and their bases."""
+    part = "word/styles.xml"
+    if part not in zf.namelist():
+        return {}
+    try:
+        root = _xml(zf, part)
+    except ET.ParseError:
+        return {}
+    styles = {}
+    for style in root.findall("w:style", NS):
+        if style.get(f"{{{NS['w']}}}type") != "paragraph":
+            continue
+        style_id = style.get(f"{{{NS['w']}}}styleId")
+        if not style_id:
+            continue
+        name_node = style.find("w:name", NS)
+        base_node = style.find("w:basedOn", NS)
+        outline = style.find("w:pPr/w:outlineLvl", NS)
+        styles[style_id] = {
+            "name": name_node.get(f"{{{NS['w']}}}val") if name_node is not None else "",
+            "based_on": base_node.get(f"{{{NS['w']}}}val") if base_node is not None else None,
+            "outline": outline.get(f"{{{NS['w']}}}val") if outline is not None else None,
+        }
+    resolved = {}
+    for style_id in styles:
+        current, visited = style_id, set()
+        while current in styles and current not in visited:
+            visited.add(current)
+            style = styles[current]
+            level = (_outline_heading_level(style["outline"])
+                     or _style_name_heading_level(style["name"])
+                     or _style_name_heading_level(current))
+            if level:
+                resolved[style_id] = level
+                break
+            current = style["based_on"]
+    return resolved
+
+
 def _inspect_docx(zf: zipfile.ZipFile, file_id: str, assets_dir: Path) -> dict:
     main_part = "word/document.xml"
     if main_part not in zf.namelist():
@@ -657,6 +710,7 @@ def _inspect_docx(zf: zipfile.ZipFile, file_id: str, assets_dir: Path) -> dict:
     root = _xml(zf, main_part)
     body = root.find("w:body", NS)
     paragraphs, tables = [], []
+    style_levels = _docx_style_heading_levels(zf)
     if body is not None:
         for child_index, child in enumerate(list(body), 1):
             if child.tag == f"{{{NS['w']}}}p":
@@ -665,9 +719,13 @@ def _inspect_docx(zf: zipfile.ZipFile, file_id: str, assets_dir: Path) -> dict:
                     ppr = child.find("w:pPr", NS)
                     pstyle = ppr.find("w:pStyle", NS) if ppr is not None else None
                     outline = ppr.find("w:outlineLvl", NS) if ppr is not None else None
+                    style_id = pstyle.get(f"{{{NS['w']}}}val") if pstyle is not None else None
+                    outline_value = outline.get(f"{{{NS['w']}}}val") if outline is not None else None
                     paragraphs.append({"index": len(paragraphs) + 1, "body_order": child_index,
-                                       "text": text, "style": pstyle.get(f"{{{NS['w']}}}val") if pstyle is not None else None,
-                                       "outline_level": outline.get(f"{{{NS['w']}}}val") if outline is not None else None})
+                                       "text": text, "style": style_id,
+                                       "outline_level": outline_value,
+                                       "heading_level": (_outline_heading_level(outline_value)
+                                                         or style_levels.get(style_id))})
             elif child.tag == f"{{{NS['w']}}}tbl":
                 table = _docx_table(child, len(tables) + 1)
                 table["body_order"] = child_index

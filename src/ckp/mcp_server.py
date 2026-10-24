@@ -91,7 +91,7 @@ def _split_list(text: str | None) -> list[str]:
 
 server = MCPServer(
     "Knowledge Distillation",
-    version="1.5.5",
+    version="1.5.6",
     instructions=(
         "Knowledge Distillation:先在对话中确认处理意图；用户只说上传/提交/归档时仅保存原件，不解析、不蒸馏、不索引；用户明确提出蒸馏后才可启动任务，且只蒸馏用户明确指定的 Word。默认每份 Word 单独启动一个蒸馏任务并产出一份 MD。多份 Word 请求蒸馏时，提醒项目经理 MCP 支持将明确指定的一组文件合并分析并产出一份知识文件；未明确要求合并时无需等待选择，按逐份处理。“全部蒸馏”表示逐份处理，不代表合并。只有项目经理明确要求指定多份资料合并分析并共同产出一个知识文件时，才将该组材料关联到同一任务并提交一份综合 MD；不得按项目、阶段、主题或相似度自行合并。仅说关键文档但未指明文件时只追问一次具体范围。用户只说处理/整理等无法判断意图时，先询问仅归档还是同时蒸馏并询问文件范围，答复前不调用任何 MCP 工具。不得根据文件名、格式或内容替用户判断蒸馏意图/关键文档。合并稿保留各来源版本与冲突，不静默裁决。已明确上传并蒸馏及范围时不重复询问，先保存原件再蒸馏。只有 .doc/.docx 可蒸馏。项目名称必须由项目经理提供；上传前先调用现有 project_list 检查相同/相近名称并展示候选；由项目经理判断是否同一项目，同一项目沿用清单规范名称并再次确认；若确认是不同项目，保留项目经理提供的新名称；项目名称未提供或项目归属未确认前不得上传；不能从材料推断、自动改名或合并项目。"
         "仅当用户明确提出蒸馏且范围明确时才调用 distill_stages，并记录 server_info.server_version、parser_version、image_renderer_version；缺少版本字段或版本与当前验收基线不符时停止图片验收并报告，不把旧 MCP 结果当作当前代码效果。只说上传/归档时不调用任何蒸馏预检或蒸馏工具。"
@@ -107,7 +107,7 @@ server = MCPServer(
         "来源必须绑定任务材料及其版本；服务端可自动补全粗粒度来源并降低来源评分。draft_export 已附正文哈希校验，通常无需再次调用 draft_verify。"
         "只用本 MCP 读取材料和检查导出，不用本机目录枚举/文件搜索、shell、其他 MCP 或 Office 工具。完成后列明每份源 Word 对应的任务及 MD；合并时列出该综合 MD 的全部来源文件。草稿未经项目经理审核，不代表发布或入库；写操作支持 request_id 幂等重试。"
         "本服务为单一 MCP，含本地开发 RAG 工具。stage 六阶段为主分类，knowledge_type 为补充文档类型，products 为项目经理单选产品线、domain 为所选产品线下多选领域；三者保存在 RAG 元数据中。用户明确要求入库时：knowledge_status 预检；对用户确认的知识 revision/content_hash 调用 submit_for_review，用户明确给出审核结论后 record_review，再 publish_knowledge；get_publish_task 返回 published 才报告本地入库完成，必须保留 chunks/verified_chunks。不得自行批准业务内容。"
-        "只有回答确实需要流程图、系统图的节点/关系/分支细节，或用户要求完整还原时，才从相关命中章节的 protected_asset_refs 取 asset_id，并以同一 knowledge_id、revision、content_hash 及该节 section_id 调用 get_asset。服务会核验 asset_id 确实由指定 body 分节引用。按返回的完整结构核对；完整还原须保留节点、边、条件、方向、分组及 unresolved_items，不得静默截断、按名称猜资产或回退其他版本。普通问答不调用 get_asset。读取失败、资产映射或哈希不符时停止使用并说明缺口。search_knowledge 可按 stage、knowledge_type、products、domain 筛选；用户未限定分类时不自行推断筛选值。发布、读取、资产和撤回都用确切知识版本与哈希。产品资料属于独立逻辑资料库，不关联客户项目、不属于项目生命周期六阶段，也不要求指定 stage；使用 product_material_ingest 保留并直接解析用户指定的 Word 原件，不经过蒸馏与审核；当前仅接受类别为产品手册的规范 Word，培训资料入库必须拒绝并留待后续迭代；products 单选、domain 由目录校验。手册正文只有与唯一内嵌图片一一对应的正式图号（如图5.2-01）才生成独立标记，不分析图片、不保存图片副本；按同一 material_id/revision/source_sha256 和 figure_id 调用 read_product_material_image 从原 Word 取回原图。产品问题优先调用 search_product_materials，命中充分时直接回答，缺少上下文时按精确 material_id/revision/source_sha256 调用 read_product_material；只有明确需要原件时才导出原始 Word。产品资料搜索和项目档案搜索分别路由，售前是否联合调用由问题意图决定。当前身份与存储是本机单用户开发适配，服务器认证与文件服务迁移另验收。"
+        "只有回答确实需要流程图、系统图的节点/关系/分支细节，或用户要求完整还原时，才从相关命中章节的 protected_asset_refs 取 asset_id，并以同一 knowledge_id、revision、content_hash 及该节 section_id 调用 get_asset。服务会核验 asset_id 确实由指定 body 分节引用。按返回的完整结构核对；完整还原须保留节点、边、条件、方向、分组及 unresolved_items，不得静默截断、按名称猜资产或回退其他版本。普通问答不调用 get_asset。读取失败、资产映射或哈希不符时停止使用并说明缺口。search_knowledge 可按 stage、knowledge_type、products、domain 筛选；用户未限定分类时不自行推断筛选值。发布、读取、资产和撤回都用确切知识版本与哈希。产品资料属于独立逻辑资料库，不关联客户项目、不属于项目生命周期六阶段，也不要求指定 stage；使用 product_material_ingest 保留并直接解析用户指定的 Word 原件，不经过蒸馏与审核；当前仅接受类别为产品手册的规范 Word，培训资料入库必须拒绝并留待后续迭代；products 单选、domain 由目录校验。产品手册按每份文档自有的图名、编号层级和分隔符识别图号；product_material_ingest 返回 figure_rule、figure_ids_sample 和 figure_locations_sample 供维护者核对。唯一匹配的正式图号写入正文标记；没有图号但有标题或正文引用的图片按分节、Word 正文/表格位置和同位置图片序号建立定位键；无标题、无正文引用的图片不建标记。figure_rule.confirmation_state 需资料维护者核对，位置不唯一时不猜测。图片不做 OCR、描述或副本存储；按同一 material_id/revision/source_sha256 和返回的 figure_id 调用 read_product_material_image 从原 Word 取回原图。产品问题优先调用 search_product_materials，命中充分时直接回答，缺少上下文时按精确 material_id/revision/source_sha256 调用 read_product_material；只有明确需要原件时才导出原始 Word。产品资料搜索和项目档案搜索分别路由，售前是否联合调用由问题意图决定。当前身份与存储是本机单用户开发适配，服务器认证与文件服务迁移另验收。"
     ),
 )
 
@@ -121,7 +121,7 @@ def _server_capabilities() -> dict:
                                    MCP_NATIVE_IMAGE_FORMATS, PARSER_VERSION)
     return {
         "server_name": "Knowledge Distillation",
-        "server_version": "1.5.5",
+        "server_version": "1.5.6",
         "parser_version": PARSER_VERSION,
         "image_renderer_version": IMAGE_RENDERER_VERSION,
         "word_formats": [".doc", ".docx"],

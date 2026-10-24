@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 
 from tests._path import *  # noqa: F401,F403
 from ckp.product_materials import (PRODUCT_MATERIAL_INDEX_VERSION, ProductMaterials,
-                                   _figure_query_id, _figure_references,
+                                   _figure_key_from_id, _figure_query_id, _figure_references,
                                    _heading_quality_warnings, _is_toc_style,
                                    _numbered_heading_level,
                                    _sections)
@@ -33,7 +33,15 @@ class _Collection:
 class ProductMaterialSearchTests(unittest.TestCase):
     def test_exact_figure_query_uses_figure_mapping_without_vector_search(self):
         self.assertEqual("图5.2-01", _figure_query_id("图5.2.01"))
-        self.assertIsNone(_figure_query_id("存货核算图5.2-01"))
+        self.assertEqual("图5.2-01", _figure_query_id("图5.2－01"))
+        self.assertEqual(_figure_key_from_id("图5.2.01"),
+                         _figure_key_from_id("图5.2-01"))
+        self.assertEqual("流程图 05.02.01", _figure_query_id("流程图 05.02.01"))
+        self.assertEqual("图05.02.01", _figure_query_id("图05.02.01"))
+        self.assertEqual("图例05/02/01", _figure_query_id("图例：05／02／01"))
+        self.assertEqual("图1", _figure_query_id("图1"))
+        self.assertEqual("图@body_order:12#2", _figure_query_id("图@body_order:12#2"))
+        self.assertEqual("存货核算图 5.2-01", _figure_query_id("存货核算图5.2-01"))
 
     def test_word_toc_rows_do_not_create_headings_or_enter_body(self):
         manifest = {
@@ -196,7 +204,7 @@ class ProductMaterialSearchTests(unittest.TestCase):
                         "relationship_id": "rId7",
                         "block_ref": "word/document.xml:paragraph:2:body_order:3"}],
         }
-        refs, by_order = _figure_references(manifest)
+        refs, by_order, rule = _figure_references(manifest)
         sections, chunks = _sections(manifest, "pm-test", 2,
                                      figure_refs_by_order=by_order)
         self.assertEqual("图5.2-01", refs[0]["figure_id"])
@@ -204,6 +212,8 @@ class ProductMaterialSearchTests(unittest.TestCase):
         self.assertEqual(["图5.2-01"], sections[0]["figure_ids"])
         self.assertEqual("rId7", sections[0]["figure_refs"][0]["relationship_id"])
         self.assertTrue(any("[[FIGURE_REF: 图5.2-01]]" in chunk["text"] for chunk in chunks))
+        self.assertEqual("detected", rule["status"])
+        self.assertEqual("图", rule["numbered_patterns"][0]["label"])
 
     def test_ambiguous_or_duplicate_figure_mapping_fails_closed(self):
         manifest = {
@@ -217,9 +227,68 @@ class ProductMaterialSearchTests(unittest.TestCase):
                  "block_ref": "word/document.xml:paragraph:8:body_order:2"},
             ],
         }
-        refs, _ = _figure_references(manifest)
-        self.assertEqual([], refs)
+        refs, _, _ = _figure_references(manifest)
+        self.assertEqual([], refs)  # Neither duplicate IDs nor nearby uncited images are guessed.
         self.assertNotEqual(PARSER_VERSION, PRODUCT_MATERIAL_INDEX_VERSION)
+
+    def test_document_specific_figure_rules_and_unnumbered_image_positions(self):
+        manifest = {
+            "paragraphs": [
+                {"index": 1, "body_order": 3, "text": "流程图 05.02.01 业务流转"},
+                {"index": 2, "body_order": 6, "text": "图例：审批节点说明"},
+            ],
+            "tables": [],
+            "assets": [
+                {"kind": "image", "part": "word/media/a.png", "relationship_id": "rId1",
+                 "block_ref": "word/document.xml:paragraph:1:body_order:2"},
+                {"kind": "image", "part": "word/media/b.png", "relationship_id": "rId2",
+                 "block_ref": "word/document.xml:paragraph:3:body_order:5"},
+            ],
+        }
+        refs, by_order, rule = _figure_references(manifest)
+        self.assertEqual(["流程图 05.02.01", "图@body_order:5"],
+                         [ref["figure_id"] for ref in refs])
+        self.assertEqual("numbered_caption", refs[0]["locator_type"])
+        self.assertEqual("body_position", refs[1]["locator_type"])
+        self.assertEqual("审批节点说明", refs[1]["caption_title"])
+        self.assertEqual(["流程图"], [row["label"] for row in rule["numbered_patterns"]])
+        self.assertTrue(rule["requires_confirmation"])
+        self.assertEqual(["rId1"], [ref["relationship_id"] for ref in by_order[3]])
+        self.assertEqual(["rId2"], [ref["relationship_id"] for ref in by_order[5]])
+        sections, _ = _sections(manifest, "pm-rules", 1,
+                                figure_refs_by_order=by_order)
+        self.assertIn("[[FIGURE_REF: 图@body_order:5]]", sections[0]["text"])
+        self.assertEqual("流程图", sections[0]["figure_refs"][0]["label"])
+
+    def test_table_embedded_unnumbered_image_gets_table_locator(self):
+        manifest = {
+            "paragraphs": [],
+            "tables": [{"table": 1, "body_order": 4, "rows": [
+                {"row": 1, "cells": [{"column": 1, "text": "图例：库存流转"}]}
+            ]}],
+            "assets": [{"kind": "image", "part": "word/media/t.png", "relationship_id": "rIdT",
+                        "block_ref": "word/document.xml:table:1", "block_context": "图例：库存流转"}],
+        }
+        refs, _, rule = _figure_references(manifest)
+        self.assertEqual("图@table:1#1", refs[0]["figure_id"])
+        self.assertEqual("库存流转", refs[0]["caption_title"])
+        self.assertEqual(1, refs[0]["table_number"])
+        self.assertEqual("图例", rule["unnumbered_candidates"][0]["label"])
+
+    def test_figure_caption_does_not_jump_over_body_text_to_an_image(self):
+        manifest = {
+            "paragraphs": [
+                {"index": 1, "body_order": 2, "text": "该段包含与图无关的操作说明。"},
+                {"index": 2, "body_order": 3, "text": "图5.2-01 接口图"},
+            ],
+            "tables": [],
+            "assets": [{"kind": "image", "part": "word/media/a.png", "relationship_id": "rId1",
+                        "block_ref": "word/document.xml:paragraph:1:body_order:1"}],
+        }
+        refs, _, rule = _figure_references(manifest)
+        self.assertEqual([], refs)
+        self.assertEqual("needs_human_review", rule["confirmation_state"])
+        self.assertEqual([3], [row["body_order"] for row in rule["numbered_patterns"][0]["examples"]])
 
     def test_search_ignores_active_mongo_heads_missing_from_local_catalog(self):
         with tempfile.TemporaryDirectory(prefix="product-material-search-") as tmp:

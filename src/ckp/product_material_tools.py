@@ -20,7 +20,7 @@ def register_product_material_tools(server, data_dir, repo_root, tool_errors):
     @tool_errors
     def product_material_ingest(path: str, category: str, product: str,
                                 domain: list[str]) -> dict:
-        """将用户明确指定的单个规范产品手册 Word 原件直接解析、切片并写入本地开发 RAG。当前仅接受 category=“产品手册”；“培训资料”暂不支持，传入时立即拒绝。product 必须单选，domain 从该产品目录中选择至少一个。stage 始终为空字符串，不归属项目生命周期六阶段。与项目无关；保留原件，不做蒸馏、草稿或审核。重复内容幂等；同名新内容建立新修订。返回原件哈希、分节/切片数、逐块读回核验数、未做 OCR 的图片数和章节质量提示。自动目录只用于和正文标题编号交叉校验，不参与正文；编号不一致时保留原文并返回质量提示，不自动纠正。state=unchanged 时计数和质量提示来自首次成功入库记录；verification_basis=original_ingest 且 readback_performed_this_call=false 表示本次未重新读回核验。"""
+        """将用户明确指定的单个规范产品手册 Word 原件直接解析、切片并写入本地开发 RAG。当前仅接受 category=“产品手册”；“培训资料”暂不支持，传入时立即拒绝。product 必须单选，domain 从该产品目录中选择至少一个。stage 始终为空字符串，不归属项目生命周期六阶段。与项目无关；保留原件，不做蒸馏、草稿或审核。重复内容幂等；同名新内容建立新修订。返回原件哈希、分节/切片数、逐块读回核验数、未做 OCR 的图片数、章节质量提示，以及按该 Word 识别的 figure_rule、figure_ids_sample、figure_locations_sample。规则结果包括编号标签、编号段数/位数、分隔符、示例和正文分节/段落或表格位置；资料维护者核对 confirmation_state。没有图号但有标题或正文引用的图片生成位置定位键，无引用的装饰图不建标记。图号唯一映射时可后续按 figure_id 原图回取。自动目录只用于和正文标题编号交叉校验，不参与正文；编号不一致时保留原文并返回质量提示，不自动纠正。state=unchanged 时计数和质量提示来自首次成功入库记录；verification_basis=original_ingest 且 readback_performed_this_call=false 表示本次未重新读回核验。"""
         with session() as service:
             return service.ingest(path, category, product, domain)
 
@@ -37,7 +37,7 @@ def register_product_material_tools(server, data_dir, repo_root, tool_errors):
     @tool_errors
     def search_product_materials(query: str, product: str = "", domain: list[str] | None = None,
                                  category: str = "", limit: int = 5) -> dict:
-        """仅检索产品资料逻辑库，不混入项目生命周期档案。stage 始终为空字符串。支持产品、领域和类别过滤；正式图号查询按映射精确定位分节，不依赖向量语义召回。返回命中分节及精确 material_id/revision/source_sha256。命中足以回答时停止，不再读取全文；有上下文缺口时再调用 read_product_material。"""
+        """仅检索产品资料逻辑库，不混入项目生命周期档案。stage 始终为空字符串。支持产品、领域和类别过滤；正式图号查询（含该文档识别的标签和分隔符变体）按映射精确定位分节，不依赖向量语义召回。返回命中分节及精确 material_id/revision/source_sha256。命中足以回答时停止，不再读取全文；有上下文缺口时再调用 read_product_material。"""
         with session(readonly=True) as service:
             return {"results": service.search(query, product, domain, category, limit),
                     "scope": "local_development", "corpus": "product_materials"}
@@ -51,11 +51,11 @@ def register_product_material_tools(server, data_dir, repo_root, tool_errors):
         with session(readonly=True) as service:
             return service.read(material_id, revision, source_sha256, section_ids, full_document)
 
-    @server.tool(title="按图号读取产品手册原图", structured_output=False)
+    @server.tool(title="按图号或正文位置读取产品手册原图", structured_output=False)
     @tool_errors
     def read_product_material_image(material_id: str, revision: int, source_sha256: str,
                                     figure_id: str) -> list:
-        """按精确资料修订、原件哈希和正式图号返回 Word 内嵌原图。仅产品手册正文中符合“图5.2-01”形式且能唯一定位的图片可取回；不做 OCR、图片理解或描述，不另存图片副本。"""
+        """按精确资料修订、原件哈希和 figure_id 返回 Word 内嵌原图。figure_id 可为该文档识别出的正式图号，或入库结果提供的正文/表格位置键（无编号但有标题或正文引用的图片）；只接受唯一映射。不做 OCR、图片理解或描述，不另存图片副本。"""
         with session(readonly=True) as service:
             payload, image_format, context = service.read_image(
                 material_id, revision, source_sha256, figure_id)

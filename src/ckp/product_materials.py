@@ -13,6 +13,7 @@ import json
 import re
 import shutil
 import tempfile
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -31,15 +32,71 @@ from ckp.knowledge_types import (
 )
 from chunks_and_in_vector.pipeline import SandboxRAG
 
-PRODUCT_MATERIAL_INDEX_VERSION = f"{PARSER_VERSION}+figure-ref-v1+toc-clean-v4"
+PRODUCT_MATERIAL_INDEX_VERSION = f"{PARSER_VERSION}+figure-ref-v2+toc-clean-v4"
 PRODUCT_MATERIAL_STAGE = ""
-_FIGURE_CAPTION = re.compile(r"^\s*图\s*(\d+(?:\.\d+)*)(?:[-.])(\d{2})(?!\d)")
-_FIGURE_QUERY = re.compile(r"^\s*图\s*(\d+(?:\.\d+)*)(?:[-.])(\d{2})\s*$")
+_FIGURE_CODE = r"\d+(?:\s*[.\-‐‑‒–—－．。＿_/／]\s*\d+){0,8}"
+_FIGURE_CAPTION = re.compile(
+    rf"^\s*(?P<label>[\u3400-\u9fff]{{0,10}}?(?:图例|图))\s*[:：、]?\s*"
+    rf"(?P<code>{_FIGURE_CODE})(?![\d.])\s*(?P<title>.*)$"
+)
+_FIGURE_CAPTION_REVERSED = re.compile(
+    rf"^\s*(?P<code>{_FIGURE_CODE})(?![\d.])\s*"
+    rf"(?P<label>[\u3400-\u9fff]{{0,10}}?(?:图例|图))\s*[:：、]?\s*(?P<title>.*)$"
+)
+_UNNUMBERED_FIGURE_CAPTION = re.compile(
+    r"^\s*(?P<label>[\u3400-\u9fff]{0,10}?(?:图例|图))\s*"
+    r"(?:[:：、]|\s+)\s*(?P<title>[^\d]{1,80})$"
+)
+
+
+def _normalize_figure_text(value: str) -> str:
+    value = unicodedata.normalize("NFKC", value or "")
+    return value.translate(str.maketrans({"‐": "-", "‑": "-", "‒": "-",
+                                         "–": "-", "—": "-", "－": "-",
+                                         "．": ".", "。": ".", "＿": "_"}))
+
+
+def _parse_figure_caption(value: str) -> dict | None:
+    """Parse a caption using its own label and numeric code, independent of a manual's punctuation style."""
+    value = _normalize_figure_text(value).strip()
+    match = _FIGURE_CAPTION.match(value) or _FIGURE_CAPTION_REVERSED.match(value)
+    if not match:
+        return None
+    label = re.sub(r"\s+", "", match.group("label"))
+    code = re.sub(r"\s*([.\-＿_/])\s*", r"\1", match.group("code"))
+    pieces = re.split(r"[.\-_/]", code)
+    # Preserve the established chapter-sequence spelling (5.2-01) while
+    # retaining fully hierarchical codes such as 05.02.01.
+    if (len(pieces) >= 3 and pieces[-1].isdigit() and len(pieces[-1]) == 2
+            and any(len(piece) != 2 for piece in pieces[:-1])
+            and code.endswith("." + pieces[-1])):
+        code = code[:-(len(pieces[-1]) + 1)] + "-" + pieces[-1]
+    display_id = f"{label}{code}" if label in {"图", "图例"} else f"{label} {code}"
+    return {"label": label, "code": code, "title": match.group("title").strip(),
+            "source_text": value,
+            "figure_id": display_id, "figure_key": _figure_key(label, code),
+            "separators": re.findall(r"[.\-_/]", code)}
+
+
+def _figure_key(label: str, code: str) -> str:
+    normalized_label = re.sub(r"\s+", "", _normalize_figure_text(label)).casefold()
+    digits = re.findall(r"\d+", _normalize_figure_text(code))
+    return f"{normalized_label}:{'.'.join(digits)}"
+
+
+def _figure_key_from_id(value: str) -> str | None:
+    parsed = _parse_figure_caption(value)
+    return parsed["figure_key"] if parsed and not parsed["title"] else None
 
 
 def _figure_query_id(query: str) -> str | None:
-    match = _FIGURE_QUERY.fullmatch(query)
-    return f"图{match.group(1)}-{match.group(2)}" if match else None
+    query = _normalize_figure_text(query).strip()
+    if re.fullmatch(r"图@(?:body_order:\d+(?:#\d+)?|table:\d+#\d+)", query):
+        return query
+    parsed = _parse_figure_caption(query)
+    if parsed and not parsed["title"]:
+        return parsed["figure_id"]
+    return None
 
 
 def _body_order_from_ref(value: str) -> int | None:
@@ -47,46 +104,219 @@ def _body_order_from_ref(value: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def _figure_references(manifest: dict) -> tuple[list[dict], dict[int, list[dict]]]:
-    """Map formal figure captions to one unambiguous nearby embedded image."""
+def _asset_position(asset: dict, table_orders: dict[int, int]) -> tuple[int | None, int | None]:
+    ref = asset.get("block_ref", "")
+    paragraph_order = _body_order_from_ref(ref)
+    if paragraph_order is not None:
+        return paragraph_order, None
+    table_match = re.search(r":table:(\d+)$", ref)
+    if table_match:
+        table_number = int(table_match.group(1))
+        return table_orders.get(table_number), table_number
+    return None, None
+
+
+def _caption_adjacent_to_image(caption_order: int, image_order: int, manifest: dict,
+                               assets: list[dict], image_relationship: str) -> bool:
+    """Require an uninterrupted Word block boundary between caption/reference and image."""
+    low, high = sorted((caption_order, image_order))
+    if low == high:
+        return True
+    for paragraph in manifest.get("paragraphs", []):
+        order = paragraph.get("body_order")
+        if not isinstance(order, int) or not low < order < high:
+            continue
+        style = str(paragraph.get("style") or "")
+        if (str(paragraph.get("text") or "").strip()
+                or paragraph.get("heading_level") is not None
+                or paragraph.get("outline_level") is not None
+                or _is_toc_style(style)):
+            return False
+    for table in manifest.get("tables", []):
+        order = table.get("body_order")
+        if isinstance(order, int) and low < order < high:
+            return False
+    for asset in assets:
+        order = _body_order_from_ref(asset.get("block_ref", ""))
+        if (asset.get("kind") == "image" and asset.get("relationship_id") != image_relationship
+                and isinstance(order, int) and low < order < high):
+            return False
+    return True
+
+
+def _figure_location_samples(refs: list[dict]) -> list[dict]:
+    return [{"figure_id": ref["figure_id"], "locator_type": ref.get("locator_type"),
+             "caption_title": ref.get("caption_title", ""),
+             "heading_path": ref.get("heading_path", []),
+             "image_body_order": ref.get("image_body_order"),
+             "caption_body_order": ref.get("caption_body_order"),
+             "table_number": ref.get("table_number")}
+            for ref in refs[:20]]
+
+
+def _figure_references(manifest: dict) -> tuple[list[dict], dict[int, list[dict]], dict]:
+    """Detect per-document figure conventions and give every body image a stable locator."""
     paragraphs = manifest.get("paragraphs", [])
     assets = manifest.get("assets", [])
     counts: dict[str, int] = {}
     captions = []
-    for paragraph in paragraphs:
-        match = _FIGURE_CAPTION.match(paragraph.get("text") or "")
-        if match:
-            figure_id = f"图{match.group(1)}-{match.group(2)}"
-            counts[figure_id] = counts.get(figure_id, 0) + 1
-            captions.append((figure_id, paragraph))
+    unnumbered = []
+    unrecognized_numbered = []
+    table_orders = {table.get("table"): table.get("body_order")
+                    for table in manifest.get("tables", [])
+                    if isinstance(table.get("table"), int)
+                    and isinstance(table.get("body_order"), int)}
+    caption_blocks = [(paragraph, paragraph.get("text") or "") for paragraph in paragraphs]
+    for table in manifest.get("tables", []):
+        for row in table.get("rows", []):
+            for cell in row.get("cells", []):
+                if cell.get("text"):
+                    caption_blocks.append(({
+                        "body_order": table.get("body_order"),
+                        "index": f"table:{table.get('table')}:row:{row.get('row')}:cell:{cell.get('column')}",
+                        "container_type": "table_cell",
+                        "table_number": table.get("table"),
+                    }, cell["text"]))
+    for paragraph, text in caption_blocks:
+        parsed = _parse_figure_caption(text)
+        if parsed:
+            key = parsed["figure_key"]
+            counts[key] = counts.get(key, 0) + 1
+            captions.append((parsed, paragraph))
+        else:
+            normalized_text = _normalize_figure_text(text).strip()
+            if re.search(r"图", normalized_text) and re.search(r"\d", normalized_text):
+                if re.search(r"图.*\d|\d.*图", normalized_text):
+                    unrecognized_numbered.append({"source_text": normalized_text,
+                                                  "body_order": paragraph.get("body_order"),
+                                                  "paragraph_index": paragraph.get("index"),
+                                                  "table_number": paragraph.get("table_number")})
+            elif re.search(r"图", normalized_text) and len(normalized_text) <= 100:
+                no_code = _UNNUMBERED_FIGURE_CAPTION.match(normalized_text)
+                is_reference = re.search(r"(?:如下图|见图|参见图|如图所示|图如下)", normalized_text)
+                is_figure_title = normalized_text.endswith("图")
+                if not (no_code or is_reference or is_figure_title):
+                    continue
+                unnumbered.append({"label": (re.sub(r"\s+", "", no_code.group("label"))
+                                              if no_code else "图"),
+                                   "title": (no_code.group("title").strip()
+                                             if no_code else normalized_text),
+                                   "body_order": paragraph.get("body_order"),
+                                   "paragraph_index": paragraph.get("index"),
+                                   "table_number": paragraph.get("table_number")})
 
     refs, at_order = [], {}
-    for figure_id, paragraph in captions:
-        if counts[figure_id] != 1:
+    mapped_relationships: set[str] = set()
+    for parsed, paragraph in captions:
+        if counts[parsed["figure_key"]] != 1:
             continue
         caption_order = paragraph.get("body_order")
         if not isinstance(caption_order, int):
             continue
         candidates = []
         for asset in assets:
-            image_order = _body_order_from_ref(asset.get("block_ref", ""))
+            image_order, table_number = _asset_position(asset, table_orders)
             if (asset.get("kind") == "image" and asset.get("relationship_id")
                     and asset.get("part") and image_order is not None
-                    and 0 <= caption_order - image_order <= 3):
-                candidates.append((image_order, asset))
-        if not candidates:
+                    and asset["relationship_id"] not in mapped_relationships
+                    and image_order <= caption_order
+                    and _caption_adjacent_to_image(caption_order, image_order, manifest,
+                                                   assets, asset["relationship_id"])):
+                candidates.append((image_order, table_number, asset))
+        if len(candidates) != 1:
             continue
-        nearest_order = max(order for order, _ in candidates)
-        nearest = [asset for order, asset in candidates if order == nearest_order]
-        if len(nearest) != 1:
-            continue
-        asset = nearest[0]
-        ref = {"figure_id": figure_id, "relationship_id": asset["relationship_id"],
+        nearest_order, table_number, asset = candidates[0]
+        ref = {"figure_id": parsed["figure_id"], "figure_key": parsed["figure_key"],
+               "locator_type": "numbered_caption",
+               "label": parsed["label"], "number_code": parsed["code"],
+               "caption_title": parsed["title"],
+               "relationship_id": asset["relationship_id"],
                "part": asset["part"], "image_body_order": nearest_order,
                "caption_body_order": caption_order}
+        if table_number is not None:
+            ref["table_number"] = table_number
         refs.append(ref)
         at_order.setdefault(caption_order, []).append(ref)
-    return refs, at_order
+        mapped_relationships.add(asset["relationship_id"])
+
+    # Product manuals can contain titled or referenced images with no formal
+    # figure number. Keep their Word body position as an exact, revision-bound
+    # locator instead of inventing a numbering scheme.
+    image_ordinals: dict[tuple[str, int], int] = {}
+    for asset in assets:
+        image_order, table_number = _asset_position(asset, table_orders)
+        relationship_id = asset.get("relationship_id")
+        if (asset.get("kind") != "image" or not relationship_id or not asset.get("part")
+                or image_order is None or relationship_id in mapped_relationships):
+            continue
+        position_key = ("table", table_number) if table_number is not None else ("body", image_order)
+        image_ordinals[position_key] = image_ordinals.get(position_key, 0) + 1
+        ordinal = image_ordinals[position_key]
+        locator = (f"图@table:{table_number}#{ordinal}" if table_number is not None
+                   else f"图@body_order:{image_order}" + (f"#{ordinal}" if ordinal > 1 else ""))
+        positional_captions = unnumbered + [
+            {"label": "待确认编号", "title": item["source_text"],
+             "body_order": item.get("body_order"),
+             "table_number": item.get("table_number")}
+            for item in unrecognized_numbered]
+        nearby_captions = [item for item in positional_captions
+                           if isinstance(item.get("body_order"), int)
+                           and (item.get("table_number") == table_number if table_number is not None
+                                else _caption_adjacent_to_image(item["body_order"], image_order,
+                                                                manifest, assets, relationship_id))]
+        same_position_images = [candidate for candidate in assets
+                                if candidate.get("kind") == "image"
+                                and _asset_position(candidate, table_orders)
+                                == (image_order, table_number)]
+        if not nearby_captions:
+            # Do not turn uncaptioned decorative artwork into a retrieval
+            # target. A body position becomes a locator only when the document
+            # itself names or references a figure there.
+            continue
+        nearby_caption = (nearby_captions[0] if len(nearby_captions) == 1
+                          and len(same_position_images) == 1 else None)
+        ref = {"figure_id": locator, "locator_type": "body_position",
+               "label": nearby_caption["label"] if nearby_caption else "图",
+               "number_code": None,
+               "caption_title": nearby_caption["title"] if nearby_caption else "",
+               "relationship_id": relationship_id, "part": asset["part"],
+               "image_body_order": image_order,
+               "caption_body_order": nearby_caption.get("body_order") if nearby_caption else None,
+               "position_confirmed_by": "Word 正文或表格内嵌图片位置"}
+        if table_number is not None:
+            ref["table_number"] = table_number
+        refs.append(ref)
+        at_order.setdefault(image_order, []).append(ref)
+        mapped_relationships.add(relationship_id)
+    patterns: dict[tuple[str, int, str, tuple[int, ...]], list[dict]] = {}
+    for parsed, paragraph in captions:
+        code_segments = re.findall(r"\d+", parsed["code"])
+        pattern = (parsed["label"], len(code_segments),
+                   "".join(parsed["separators"]), tuple(map(len, code_segments)))
+        patterns.setdefault(pattern, []).append({"figure_id": parsed["figure_id"],
+                                                  "source_text": parsed["source_text"],
+                                                  "body_order": paragraph.get("body_order")})
+    rule_profile = {
+        "status": "needs_review" if unrecognized_numbered else
+                  "detected" if patterns or unnumbered or refs else "none_detected",
+        "numbered_patterns": [
+            {"label": label, "number_segments": depth, "separators": separators,
+             "segment_widths": list(widths),
+             "count": len(examples), "examples": examples[:5]}
+            for (label, depth, separators, widths), examples in patterns.items()
+        ],
+        "unnumbered_candidates": unnumbered[:20],
+        "unrecognized_numbered_candidates": unrecognized_numbered[:20],
+        "requires_confirmation": bool(unnumbered or unrecognized_numbered) or any(len(items) < 2 for items in patterns.values()),
+        "confirmation_state": ("needs_human_review" if bool(unnumbered or unrecognized_numbered)
+                               or any(len(items) < 2 for items in patterns.values())
+                               else "consistent"),
+        "image_locator_rule": "有正式图号时按图号绑定；没有图号但有标题或正文引用时按 Word 正文/表格位置与同位置图片序号绑定",
+        "unlabeled_image_count": sum(1 for ref in refs if ref["locator_type"] == "body_position"
+                                     and not ref.get("caption_title")),
+        "mapped_figure_count": len(refs),
+    }
+    return refs, at_order, rule_profile
 
 
 def _now() -> str:
@@ -371,9 +601,12 @@ def _sections(manifest: dict, material_id: str, revision: int,
     for section in sections:
         section["text"] = "\n\n".join(block["text"] for block in section["blocks"])
         del section["blocks"]
+        section_refs = [ref for ref in sum(figure_refs_by_order.values(), [])
+                        if ref["figure_id"] in section.get("figure_ids", [])]
+        for ref in section_refs:
+            ref["heading_path"] = list(section["heading_path"])
         rendered.append({**section, "heading": " / ".join(section["heading_path"]),
-                         "figure_refs": [ref for ref in sum(figure_refs_by_order.values(), [])
-                                         if ref["figure_id"] in section.get("figure_ids", [])]})
+                         "figure_refs": section_refs})
         section.pop("figure_ids", None)
     if not rendered:
         raise ValueError("Word 文档未提取到可索引的正文或表格")
@@ -500,6 +733,8 @@ class ProductMaterials:
                             "embedded_images_not_ocr_processed": int(indexed_record.get("image_count", current.get("image_count", 0))),
                             "figure_ref_count": len(indexed_record.get("figure_refs", [])),
                             "figure_ids_sample": [ref["figure_id"] for ref in indexed_record.get("figure_refs", [])[:20]],
+                            "figure_locations_sample": _figure_location_samples(indexed_record.get("figure_refs", [])),
+                            "figure_rule": indexed_record.get("figure_rule", {}),
                             "quality_warnings": indexed_record.get("quality_warnings", []),
                             "embedding_mode": self.rag.mode}
 
@@ -524,7 +759,7 @@ class ProductMaterials:
             manifest = inspect_office(source, Path(tmp), file_id=material_id,
                                       version_id=version_id, expected_sha256=sha256,
                                       copy_assets=False)
-        figure_refs, figure_refs_by_order = _figure_references(manifest)
+        figure_refs, figure_refs_by_order, figure_rule = _figure_references(manifest)
         quality_warnings = _heading_quality_warnings(manifest)
         sections, chunks = _sections(manifest, material_id, revision,
                                      getattr(self.rag.embedding, "split_section", None),
@@ -569,6 +804,7 @@ class ProductMaterials:
                   "content": "\n\n".join(f"## {' / '.join(s['heading_path'])}\n\n{s['text']}" for s in sections),
                   "sections": sections, "image_count": len(manifest.get("assets", [])),
                   "figure_refs": figure_refs,
+                  "figure_rule": figure_rule,
                   "quality_warnings": quality_warnings,
                   "parser_version": PRODUCT_MATERIAL_INDEX_VERSION, "sandbox": True}
         records.replace_one({"_id": record_id}, record, upsert=True)
@@ -649,6 +885,8 @@ class ProductMaterials:
                 "embedded_images_not_ocr_processed": len(manifest.get("assets", [])),
                 "figure_ref_count": len(figure_refs),
                 "figure_ids_sample": [ref["figure_id"] for ref in figure_refs[:20]],
+                "figure_locations_sample": _figure_location_samples(figure_refs),
+                "figure_rule": figure_rule,
                 "quality_warnings": quality_warnings,
                 "sandbox": True, "embedding_mode": self.rag.mode}
 
@@ -735,10 +973,13 @@ class ProductMaterials:
              "source_sha256": source_sha256})
         if not record:
             raise ValueError("产品资料当前不可读")
+        query_id = _figure_query_id(figure_id)
+        query_key = _figure_key_from_id(query_id) if query_id else None
         matches = [ref for ref in record.get("figure_refs", [])
-                   if ref.get("figure_id") == figure_id]
+                   if ref.get("figure_id") == figure_id
+                   or (query_key and ref.get("figure_key") == query_key)]
         if len(matches) != 1:
-            raise ValueError("该修订没有唯一、可定位的正式图号映射")
+            raise ValueError("该修订没有唯一、可定位的图片映射")
         blob = db.rowdict(self.store.conn.execute(
             "SELECT * FROM blobs WHERE sha256=?", (source_sha256,)).fetchone())
         if not blob:
@@ -767,19 +1008,24 @@ class ProductMaterials:
                 payload, image_format = rendered.read_bytes(), "png"
             if image_format not in MCP_NATIVE_IMAGE_FORMATS:
                 raise ValueError(f"MCP 图片返回暂不支持该原图格式: .{image_format}")
+        canonical_figure_id = matches[0]["figure_id"]
         section = next((s for s in record.get("sections", [])
-                        if figure_id in s.get("figure_ids", [])), None)
+                        if canonical_figure_id in s.get("figure_ids", [])), None)
         context = {"material_id": material_id, "revision": revision,
                    "source_sha256": source_sha256, "title": record.get("title"),
-                   "filename": item["filename"], "figure_id": figure_id,
+                   "filename": item["filename"], "figure_id": canonical_figure_id,
                    "heading_path": section.get("heading_path", []) if section else [],
                    "image_part": matches[0]["part"], "image_format": image_format,
+                   "locator_type": matches[0].get("locator_type", "numbered_caption"),
+                   "caption_title": matches[0].get("caption_title", ""),
+                   "body_position": {"image_body_order": matches[0].get("image_body_order"),
+                                     "caption_body_order": matches[0].get("caption_body_order")},
                    "mime_type": {"png": "image/png", "jpg": "image/jpeg",
                                  "jpeg": "image/jpeg", "gif": "image/gif",
                                  "webp": "image/webp"}[image_format],
                    "hash_verified": True,
                    "image_processed": False,
-                   "message": "已按图号从指定 Word 修订返回原图；服务端未解析或描述图片。"}
+                   "message": "已按图号或正文位置从指定 Word 修订返回原图；服务端未解析或描述图片。"}
         return payload, ("jpeg" if image_format == "jpg" else image_format), context
 
     def search(self, query: str, product: str = "", domain: list[str] | None = None,
@@ -825,8 +1071,11 @@ class ProductMaterials:
             if figure_query:
                 matching_sections = {}
                 for record in {r["_id"]: r for r in allowed.values()}.values():
+                    query_key = _figure_key_from_id(figure_query)
                     section_ids = {section["section_id"] for section in record.get("sections", [])
-                                   if figure_query in section.get("figure_ids", [])}
+                                   if any(figure_query == figure_id
+                                          or (query_key and query_key == _figure_key_from_id(figure_id))
+                                          for figure_id in section.get("figure_ids", []))}
                     if section_ids:
                         matching_sections[record["_id"]] = (record, section_ids)
                 if matching_sections:

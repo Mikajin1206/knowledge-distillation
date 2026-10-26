@@ -4,23 +4,26 @@
 
 [简体中文](README.zh-CN.md) · [English](README.md)
 
-**Knowledge Distillation** is a local-first workflow for turning explicitly selected Word documents into traceable project knowledge drafts. The 1.2.1 release was accepted through WorkBuddy with 30 tools. The restored 1.3.0 implementation adds `metadata_catalog` on the same stdio MCP service, for 31 tools total; WorkBuddy verified the OA product/domain metadata path through revision, review, publish, and filtered retrieval. The full project test suite passes (138 tests). The review remains local development evidence, not business-content acceptance or production deployment.
+**Company Knowledge and Business Agents** builds on this repository's Knowledge Distillation/RAG service. Stage one has three tasks: select the Agent platform, build the minimum shared foundation, and deliver the first WeCom presales workflow covering knowledge search, customer profiling, requirements analysis and a detailed proposal. Local minimum compatibility probes selected Spring AI Alibaba Agent Framework/Graph 1.1.2.2 for the Java/Spring Agent service; the existing Python knowledge MCP remains. Sales management and other role agents come later. RAG tuning and other application optimization are grouped in a separate final phase. The company model gateway and its employee credentials, quotas, usage and conversation management belong to an independent project. These new Agent features are not implemented.
 
-RAG uses the six lifecycle stages in `templates/蒸馏规范/阶段材料清单.md` as its primary classification. The restored 1.3.0 implementation adds project-manager-selected product line (`products`, one string) and related domains (`domain`, a list) as independent filter dimensions. These values come from the metadata catalog, never from model inference; stage remains an orthogonal primary classification and stays out of Markdown frontmatter.
+**Current baseline, 2026-10-26:** the knowledge MCP declares version 1.5.6 and statically registers 38 tools. Original storage, lifecycle Word distillation, local review/publication/search/read/assets/withdrawal, and the independent Word product-manual corpus have acceptance records within their documented local scope. The count is a code inventory, not a fresh client loading test. Identity remains `local_development`, storage remains `local_versioned_store`, and company file services, remote authentication, production publication and multi-user permissions are not implemented. K16 production adaptation remains paused.
 
-The project is designed for WorkBuddy and compatible stdio MCP clients. Local development includes review records, asynchronous publication tasks, chunk read-back verification, and versioned diagram JSON storage and retrieval. The storage adapter is `local_versioned_store`, and the identity scope is `local_development`; company file-server integration, remote authentication, and production publishing are not implemented.
+The shared corpus covers all six project lifecycle stages. Product manuals have an independent corpus; sales knowledge is a separate planned domain. Generated agent output does not automatically become public knowledge. Personal knowledge clients use the single knowledge MCP within their verified capabilities; company model gateway integration belongs to the independent project.
 
-## Developer documentation
+## Product and developer documentation
 
-The current product requirements, implementation handoff, and downstream acceptance criteria are available in Chinese:
+The canonical documents are in Chinese. See the [documentation index](docs/README.md):
 
-- [Product requirements](docs/01-%E9%9C%80%E6%B1%82%E8%A7%84%E6%A0%BC.md)
-- [Product iteration board (single development task board)](docs/%E4%BA%A7%E5%93%81%E8%BF%AD%E4%BB%A3%E7%9C%8B%E6%9D%BF.md)
-- [Current implementation and RAG handoff contract](docs/05-%E4%B8%8A%E4%BC%A0%E8%92%B8%E9%A6%8F%E4%B8%8EMD%E4%BA%A7%E5%87%BA%E4%BA%A4%E6%8E%A5%E6%96%87%E6%A1%A3.md)
-- [Single-MCP local RAG development and black-box acceptance](docs/07-%E5%8D%95MCP%E6%9C%AC%E5%9C%B0RAG%E5%BC%80%E5%8F%91%E4%B8%8E%E9%BB%91%E7%9B%92%E9%AA%8C%E6%94%B6.md)
-- [Downstream development and acceptance standards](docs/%E4%B8%8B%E6%B8%B8%E5%BC%80%E5%8F%91%E9%A1%BB%E7%9F%A5%E4%B8%8E%E9%AA%8C%E6%94%B6%E6%A0%87%E5%87%86.md)
+- [Product requirements](docs/01-需求规格.md)
+- [Architecture and development](docs/02-总体架构与开发文档.md)
+- [Business-agent workflows](docs/03-业务Agent产品与开发方案.md)
+- [Single iteration board](docs/产品迭代看板.md)
+- [Current knowledge interface contract](docs/05-上传蒸馏与MD产出交接文档.md)
+- [Local MCP and client acceptance records](docs/07-单MCP本地RAG开发与黑盒验收.md)
+- [Downstream acceptance requirements](docs/下游开发须知与验收标准.md)
+- [Project memory and iteration synchronization](docs/项目记忆.md) / [AGENTS.md](AGENTS.md)
 
-Historical test reports, process logs, customer files, and local configuration are intentionally excluded from this public repository.
+Only document work is delivered in this iteration; no new agent, gateway, database migration or production deployment is claimed. Private customer files, credentials and runtime data are excluded from the repository.
 
 ## What it does
 
@@ -44,7 +47,7 @@ Every `##` through `######` heading carries a stable section ID and route, for e
 
 ## Scope and data boundary
 
-The workflow collects evidence across the full project lifecycle: initiation, discovery, solution/design, implementation/change, testing/acceptance, and operations/improvement. It does not collect evidence around a presales question. Presales, implementation, and operations agents can later retrieve and apply the shared project knowledge for their own tasks.
+The workflow collects evidence across the full project lifecycle: initiation, discovery, solution/design, implementation/change, testing/acceptance, and operations/improvement. It does not collect evidence around a presales question. Presales, implementation, operations, and development agents can later retrieve and apply the shared project knowledge for their own tasks.
 
 Originals and distilled knowledge have separate roles:
 
@@ -108,7 +111,7 @@ The Skill is in [`skills/knowledge-distillation/`](skills/knowledge-distillation
 
 Legacy `knowledge-rag-development` and `ai-generate-solution` modules remain for internal development compatibility only and are not separately registered as external MCP servers. The solution-generation entry is inactive; clients can use knowledge returned by the primary MCP in their own generation workflow.
 
-The verified 1.2.1 MCP release exposed 30 tools. The 1.3.0 single MCP server exposes 31 tools, adding `metadata_catalog` to that set: 21 project, original-file, Word distillation, draft, and task tools plus `knowledge_status`, `submit_for_review`, `record_review`, `publish_knowledge`, `get_publish_task`, `search_knowledge`, `read_knowledge`, `get_asset`, and `withdraw_knowledge`. WorkBuddy verified the OA product/domain metadata flow through review, publish, and positive/negative filtered retrieval; project tests pass (138 tests). WorkBuddy withdrawal and several negative-input cases remain untested. Tool names and schemas are defined in `src/ckp/mcp_server.py` and `src/ckp/knowledge_tools.py`.
+The current MCP code declares 1.5.6 and statically registers 38 tools: 22 project/catalog/original/distillation tools, nine knowledge-lifecycle tools, and seven product-material tools. Historical 1.2.1 (30 tools), 1.3.0 (31 tools), and test counts retain their original evidence scope; later withdrawal and real Word-manual acceptance are recorded in docs/07. This inventory is not a new client-loading test. Schemas are defined in `src/ckp/mcp_server.py`, `knowledge_tools.py`, and `product_material_tools.py`.
 
 ## Image handling
 

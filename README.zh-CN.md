@@ -2,9 +2,13 @@
 
 [简体中文](README.zh-CN.md) · [English](README.md)
 
-**Knowledge Distillation** 是一个本地优先的工作流，用于把用户明确指定的 Word 文档整理成有来源、可追溯的项目知识草稿。1.2.1 版已通过 WorkBuddy 验收，共 30 个工具。1.3.0 在同一 stdio MCP 服务新增 `metadata_catalog`，共 31 个工具；WorkBuddy 已验证 OA 产品/领域元数据贯穿修订、审核、发布与正反向检索，项目完整测试 138 项通过。本次审核仅为本地开发链路证据，不代表业务内容验收或生产部署。
+**公司知识与业务智能体**以本仓库的知识蒸馏/RAG为基础。第一阶段主线：明确 Agent 平台选型 → 建设最小公共底座 → 交付企业微信售前首个闭环（搜知识、客户画像、需求分析、详细售前方案）。平台经本地最小兼容验证选定 Spring AI Alibaba Agent Framework/Graph 1.1.2.2（Java/Spring），现有 Python 知识 MCP 保留；销售管理与其他岗位应用后续安排，RAG 调优和其他应用优化统一归最后优化类别。公司模型代理及员工模型授权、配额用量、公司对话管理已移出本项目，另作独立项目。新业务应用尚未实现。
 
-RAG 主分类采用 `templates/蒸馏规范/阶段材料清单.md` 的六个生命周期阶段。1.3.0 已恢复 PM 从 metadata catalog 单选产品线（`products` 为单个字符串），再从关联项多选领域（`domain` 为数组），作为独立筛选维度；服务拒绝缺选、多产品和产品/领域错配，不从材料推断选择。`stage` 仍是主分类，来自受审核 sidecar，不加入 MD 最小头。项目面向 WorkBuddy 及兼容 stdio 的 MCP 客户端。本地开发已具备审核记录、异步发布任务、逐块读回校验，以及图形 JSON 的版本化独立存储和读取。当前文件适配器为 `local_versioned_store`，身份范围为 `local_development`；公司文件服务器、远程认证和生产发布尚未实现。
+**当前基线（2026-10-26）：**知识MCP代码1.5.6，静态注册38工具。原件、六阶段Word蒸馏、本地审核/发布/检索/读取/图形/撤回，以及产品Word手册独立库和按图号/位置回原图已在看板约定范围内验收；历史证据见docs/07。38是代码清点，不是本轮客户端加载实测。身份仍是`local_development`、文件适配仍是`local_versioned_store`；公司文件服务器、远程认证、生产发布和多人权限未实现，K16继续暂停。
+
+RAG主分类仍为项目六阶段，PM从目录单选产品线并多选关联领域，不从材料推断；产品手册是独立资料库、不套阶段。销售画像与销售知识将独立分域，不自动写入公共RAG。本项目仅做获准国产 API 的最小模型调用适配，个人知识客户端继续按已有授权范围使用单 MCP。
+
+完整产品、开发和迭代规则从[文档导航](docs/README.md)进入。新规划不表示应用开发、采购、个人配置修改或部署已经完成。
 
 ## 功能
 
@@ -28,7 +32,7 @@ RAG 主分类采用 `templates/蒸馏规范/阶段材料清单.md` 的六个生�
 
 ## 业务范围与数据边界
 
-工作流按照项目整体生命周期收集证据：立项与范围、调研与需求、方案与设计、实施与变更、测试与验收、运维与改进。收集过程不围绕售前问题组织。售前、实施和运维 Agent 可以在后续任务中检索并使用这套共同的项目知识。
+工作流按照项目整体生命周期收集证据：立项与范围、调研与需求、方案与设计、实施与变更、测试与验收、运维与改进。收集过程不围绕售前问题组织。售前、实施、运维和开发 Agent 可以在后续任务中检索并使用这套共同的项目知识。
 
 原始材料和蒸馏知识承担不同职责：
 
@@ -40,13 +44,14 @@ RAG 主分类采用 `templates/蒸馏规范/阶段材料清单.md` 的六个生�
 
 ## 下游开发文档
 
-以下文档说明产品目标、当前代码契约和后续验收要求：
-
-- [需求规格](docs/01-需求规格.md)
-- [产品迭代看板（唯一开发任务看板）](docs/产品迭代看板.md)
-- [当前代码契约与 RAG 接续标准](docs/05-上传蒸馏与MD产出交接文档.md)
-- [单 MCP 本地 RAG 开发与黑盒验收](docs/07-单MCP本地RAG开发与黑盒验收.md)
-- [下游开发须知与验收标准](docs/下游开发须知与验收标准.md)
+- [总产品需求](docs/01-需求规格.md)
+- [总体架构与开发文档](docs/02-总体架构与开发文档.md)
+- [四类业务Agent方案](docs/03-业务Agent产品与开发方案.md)
+- [产品迭代看板（唯一任务看板）](docs/产品迭代看板.md)
+- [当前知识代码契约](docs/05-上传蒸馏与MD产出交接文档.md)
+- [本地RAG与WorkBuddy验收记录](docs/07-单MCP本地RAG开发与黑盒验收.md)
+- [下游开发验收标准](docs/下游开发须知与验收标准.md)
+- [项目记忆与文档同步约定](docs/项目记忆.md) / [AGENTS.md](AGENTS.md)
 
 历史测试报告、过程日志、客户文件和本地配置不纳入公开仓库。
 
@@ -104,7 +109,7 @@ Skill 位于 [`skills/knowledge-distillation/`](skills/knowledge-distillation/)�
 
 旧 `knowledge-rag-development` 与 `ai-generate-solution` 模块仅为内部开发兼容保留，不再单独对外注册 MCP 服务。方案生成独立入口已停用；客户端可使用主 MCP 提供的知识工具结果自行组织生成流程。
 
-已通过 WorkBuddy 验收的 1.2.1 版为 30 个工具；1.3.0 单一 MCP 服务提供 31 个工具，新增 `metadata_catalog`：原有 21 个项目、原件、Word 蒸馏、草稿和任务工具，以及 `metadata_catalog`、`knowledge_status`、`submit_for_review`、`record_review`、`publish_knowledge`、`get_publish_task`、`search_knowledge`、`read_knowledge`、`get_asset`、`withdraw_knowledge`。WorkBuddy 已完成 OA 正向入库和分类正反向检索验收，项目完整自动化套件 138 项通过；撤回和若干负向输入尚未做 WorkBuddy 黑盒验收。工具结构分别见 `src/ckp/mcp_server.py` 与 `src/ckp/knowledge_tools.py`。
+当前MCP代码版本1.5.6，静态38工具：`mcp_server.py`中22个项目/目录/原件/蒸馏工具，`knowledge_tools.py`中9个生命周期工具，`product_material_tools.py`中7个产品资料工具。历史1.2.1的30工具、1.3.0的31工具及对应测试数保留原版本口径；后续撤回与真实产品手册验收已完成。当前客户端加载列表和未来Agent/代理需各自验证，见docs/05、docs/07。
 
 ## 图片处理
 

@@ -1,10 +1,14 @@
 # 云端开发与验证
 
-## 当前状态（2026-10-22）
+## 当前状态（2026-10-26）
 
-本文件余下的云端/MongoDB/Milvus 过程是历史开发记录；旧 `knowledge-rag-development`、`ai-generate-solution` 模块仅作内部开发兼容保留，不单独对外注册；方案生成独立入口停用。WorkBuddy 当前统一入口仍是 `knowledge-distillation` / `ckp-mcp.sh`。1.2.1 主链已通过 WorkBuddy 验收，为30工具；1.3.0 在同一服务提供31工具，产品线/领域契约已通过 OA 正向黑盒入库和检索筛选验收。撤回与若干负向输入仍未做 WorkBuddy 黑盒验证。旧 `rag-mcp.sh` 与 `ai-generate-solution-mcp.sh` 仅作历史专项开发/CLI 入口，不作为额外 WorkBuddy MCP 配置。
+当前总产品、技术方案与任务分别见[01](docs/01-需求规格.md)、[02](docs/02-总体架构与开发文档.md)和[看板](docs/产品迭代看板.md)。知识MCP代码1.5.6，静态38工具，K01–K11已完成约定本地/客户端范围，含后续撤回和真实产品手册图片验收；证据见[07](docs/07-单MCP本地RAG开发与黑盒验收.md)。本轮未运行应用测试。
 
-本地已具备 `local_development` 身份范围下的审核记录、异步发布、逐块读回校验和 `local_versioned_store` 图形 JSON 版本存储/读取。公司 file server、remote auth 和生产发布仍未实现。2026-10-22 WorkBuddy 完成1.2.1主OA发布（65/65 verified）、三项检索、图形资产与目录定向复测；2026-10-23 完成1.3.0 OA分类元数据正向入库、65/65 verified及检索正反筛选。撤回未做黑盒验证，项目完整自动化套件138项通过。详细状态见 [docs/07](docs/07-单MCP本地RAG开发与黑盒验收.md)。
+当前对外知识入口仍为单一 `ckp-mcp.sh`；旧独立RAG/方案生成MCP仅作历史兼容。公司文件/身份/生产适配K16继续暂停。第一阶段按平台选型、公共底座、企微售前闭环推进，见01/02/03/06；平台尚未定案、业务Agent尚未实现。公司模型代理属于独立项目；应用RAG调优与其他优化归最后优化类别。旧HTTP开发服务不代表新业务Agent已交付。
+
+## 以下为2026-10-22云端开发交接历史
+
+下方路径、分支、版本、工具数、测试数和“当前”措辞属于当时开发环境，不能代替以上当前基线，也不能直接用于部署新架构。
 
 合并工作区：`/workspace/knowledge-distillation-cloud`，分支 `cloud/rag-integration`。
 最新蒸馏基准为 `97ec6fe`；`src/ckp`、模板、Skill 与原有 MCP 工具保持该提交的实现。

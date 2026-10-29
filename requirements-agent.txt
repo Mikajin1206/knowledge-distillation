@@ -1,0 +1,9 @@
+# K17 Agent modules; separate environment from the existing knowledge service.
+# Versions match the existing compatible Python 3.12 LangGraph/SDK baseline.
+langgraph==1.0.10
+langchain-core==1.2.16
+langchain-openai==1.1.10
+openai==2.24.0
+mcp==2.3.0
+fastapi==0.159.1
+uvicorn==0.54.0

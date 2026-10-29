@@ -2,7 +2,7 @@
 
 [简体中文](README.zh-CN.md) · [English](README.md)
 
-**公司知识与业务智能体**以本仓库的知识蒸馏/RAG为基础。第一阶段主线：明确 Agent 平台选型 → 建设最小公共底座 → 交付企业微信售前首个闭环（搜知识、客户画像、需求分析、详细售前方案）。平台经本地最小兼容验证选定 Spring AI Alibaba Agent Framework/Graph 1.1.2.2（Java/Spring），现有 Python 知识 MCP 保留；销售管理与其他岗位应用后续安排，RAG 调优和其他应用优化统一归最后优化类别。公司模型代理及员工模型授权、配额用量、公司对话管理已移出本项目，另作独立项目。新业务应用尚未实现。
+**公司知识与业务智能体**以本仓库的知识蒸馏/RAG为基础。第一阶段主线：明确 Agent 平台选型 → 建设最小公共底座 → 通过本地或隔离入口交付售前首个闭环（搜知识、客户画像、需求分析、详细售前方案）。平台经本地最小兼容验证并于同日修订选定 Python LangGraph（复用现有 Python 代码栈，原 Java/Spring AI Alibaba 定案作废），现有 Python 知识 MCP 保留；销售管理与其他岗位应用后续安排，RAG 调优和其他应用优化统一归最后优化类别。公司模型代理及员工模型授权、配额用量、公司对话管理已移出本项目，另作独立项目。企业微信租户接入作为所有 Agent 的最后统一任务，当前不做。公共底座知识只读适配已有本地开发切片，新业务应用尚未实现。
 
 **当前基线（2026-10-26）：**知识MCP代码1.5.6，静态注册38工具。原件、六阶段Word蒸馏、本地审核/发布/检索/读取/图形/撤回，以及产品Word手册独立库和按图号/位置回原图已在看板约定范围内验收；历史证据见docs/07。38是代码清点，不是本轮客户端加载实测。身份仍是`local_development`、文件适配仍是`local_versioned_store`；公司文件服务器、远程认证、生产发布和多人权限未实现，K16继续暂停。
 
@@ -150,3 +150,8 @@ requirements-mcp.txt           MCP 服务端依赖
 ## 许可证
 
 本项目采用 MIT License。详见 [`LICENSE`](LICENSE)。
+
+
+### Agent 隔离本地 API（开发中）
+
+独立依赖见 `requirements-agent.txt`；当前 macOS ARM64 固定版本见 `requirements-agent-macos.lock.txt`，生产和其他平台尚未验收。服务只绑定 `127.0.0.1`。先在进程环境中设置 `AGENT_LOCAL_ORG`、`AGENT_LOCAL_EMPLOYEE`、`AGENT_LOCAL_TOKEN`、`AGENT_LOCAL_DB`，再运行 `PYTHONPATH=src python -m agent_foundation.local_server`。模型默认关闭；若需运行本地模型任务，还需显式设置 `AGENT_LOCAL_MODEL_ENABLED=1`、`AGENT_MODEL_BASE_URL`、`AGENT_MODEL_NAME` 和 `AGENT_MODEL_API_KEY`，并单独运行 `PYTHONPATH=src python -m agent_foundation.local_model_worker` 处理一个任务。实际企业身份、企微、生产数据库和知识权限未接通。

@@ -100,7 +100,7 @@ class McpServerEndToEnd(unittest.TestCase):
             "clientInfo": {"name": "ckp-e2e", "version": "0"}})
         server_info = init["result"]["serverInfo"]
         self.assertEqual("Knowledge Distillation", server_info["name"])
-        self.assertEqual("1.5.5", server_info["version"])
+        self.assertEqual("1.5.6", server_info["version"])
         instructions = init["result"].get("instructions", "")
         self.assertIn("distill_word_content", instructions)
         self.assertIn("distill_word_image", instructions)
@@ -157,7 +157,7 @@ class McpServerEndToEnd(unittest.TestCase):
         preflight = self._call("distill_stages", {})
         self.assertEqual(6, len(preflight["stages"]))
         info = preflight["server_info"]
-        self.assertEqual("1.5.5", info["server_version"])
+        self.assertEqual("1.5.6", info["server_version"])
         self.assertEqual("ckp-office-inspector-v0.4", info["parser_version"])
         self.assertEqual("ckp-emf-lo-primary-frame-guard-bitmap-fallback-v8", info["image_renderer_version"])
         self.assertEqual(["svg", "emf", "wmf", "bmp", "tif", "tiff"],
